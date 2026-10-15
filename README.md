@@ -15,7 +15,8 @@ AI（WorkBuddy / Codex / 任何 MCP 客户端）也能直接调工具操作服�
 之后每条命令 **4-35ms**（实测），`cd` 和环境变量跨命令保持。
 
 ```bat
-:: 1) 装文件映射的驱动（WinFsp + SSHFS-Win，已装自动跳过）
+:: 1) 装依赖：Node.js >= 18（必需）+ plink.exe（必需）
+::    另需 WinFsp + SSHFS-Win 的 .msi 放进 installers\ 后跑下面这行（仅挂文件映射要）
 install_deps.cmd
 
 :: 2) 配服务器（复制模板改成自己的；或直接问 AI「帮我配一下这台服务器」）
@@ -192,18 +193,29 @@ register_mcp_codex.cmd    :: 注册到 Codex
 
 ### 4.1 前置条件（本机 Windows）
 
-| 依赖 | 用途 | 获取方式 |
-|---|---|---|
-| Node.js ≥ 18 | 运行 CLI 和 MCP | https://nodejs.org （LTS） |
-| plink.exe | SSH 客户端 | PuTTY 安装包自带，或单独下载 plink.exe |
-| WinFsp | Windows 文件系统驱动（挂载的底座） | https://winfsp.dev |
-| SSHFS-Win | 基于 WinFsp 的 SSH 文件系统 | https://github.com/winfsp/sshfs-win/releases |
+| 依赖 | 必需？ | 用途 | 获取方式 |
+|---|---|---|---|
+| Node.js ≥ 18 | **是** | 运行 CLI 和 MCP | <https://nodejs.org>（LTS） |
+| plink.exe | **是** | SSH 客户端 | PuTTY 安装包自带，或从 <https://www.chiark.greenend.org.uk/~sgtatham/putty/> 单独下 |
+| WinFsp | 仅文件映射 | Windows 文件系统驱动（挂载的底座） | <https://winfsp.dev> 或 [Releases](https://github.com/winfsp/winfsp/releases) |
+| SSHFS-Win | 仅文件映射 | 基于 WinFsp 的 SSH 文件系统 | <https://github.com/winfsp/sshfs-win/releases> |
+
+**Node.js 和 plink 是硬需求。** WinFsp + SSHFS-Win 只在你想把服务器目录挂成本地盘符时才需要
+—— 只用 `ssh-remote` 命令行或 MCP server 的话，这两样可以不装。
+
+下载 WinFsp 和 SSHFS-Win 后，把两个 `.msi` 丢进 `installers\` 目录，
+再双击 `install_deps.cmd` 即可静默安装（已装会自动跳过）。
 
 服务器端只需有 `bash` + `base64` + `setsid`（util-linux，发行版默认都有）；
 旧 tmux 兜底通道才需要 `tmux`（没有就 `sudo apt install tmux`）。
 
-> plink 路径：包里若带 `bin\plink.exe` 就写相对路径 `"bin\\plink.exe"`（可整包搬走）；
-> 否则写你本机 plink 的绝对路径，或用环境变量 `SRB_PLINK` 覆盖。
+> plink 路径：`servers.json` 里写绝对路径，或用环境变量 `SRB_PLINK` 覆盖。
+> 代码也支持写相对路径（如 `"bin\\plink.exe"`），这样整个目录可以整包搬走。
+
+> **这个仓库只装源码，不含 `.msi` / `.exe` 等二进制。**
+> 安装包走 [Releases](https://github.com/Wang-Yibin/ssh-remote-bridge/releases)（如果那里没有，
+> 就按上表从官方页面下载）。这样 clone 下来的仓库只有 200 多 KB，
+> 而 git 历史也不会被 170MB 的二进制永久撑大。
 
 ### 4.2 配置服务器
 
