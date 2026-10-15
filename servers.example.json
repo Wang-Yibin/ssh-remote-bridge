@@ -1,0 +1,17 @@
+{
+  "plink": "bin\\plink.exe",
+  "servers": {
+    "myserver": {
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "your-username",
+      "password": "your-password",
+      "hostkey": "SHA256:PASTE_THE_FINGERPRINT_HERE",
+      "drive": "M:",
+      "remote": "/home/your-username",
+      "tmuxSession": "srb-ai",
+      "default": true,
+      "note": "Replace host/user/password/hostkey with your own values, or delete this entry. To get the hostkey: run  bin\\plink.exe -ssh -batch -P 22 10.0.0.1 exit  and copy the SHA256:... line from the output. Add more servers by copying this block - give each one a DIFFERENT drive letter, or remount_all.cmd will report a clash. Optionally add \"mount\": \"F:\\\\myserver\" if you want a plain-folder path as well (that one needs Windows Developer Mode)."
+    }
+  }
+}
