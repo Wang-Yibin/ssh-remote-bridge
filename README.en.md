@@ -427,6 +427,7 @@ ssh-remote> _
 | `tail -f x.log` / `ping <host>` | **auto-streams** |
 | `gpu` / `gpu -w` | GPU snapshot / live refresh |
 | `htop` (anything needing a TTY) | points you at `raw htop` instead (see §6.2.1) |
+| **Tab** | complete command names, builtins, remote paths (see §6.2.2) |
 | `exit` / `quit` / Ctrl+D | leave the local shell (drops the persistent connection) |
 | Ctrl+C | **interrupt the running remote command** (kills the remote process group); does not exit, clears the line when idle |
 | `raw vim x.txt` or `! vim x.txt` | full-screen mode (plink -t) for vim / htop / top / watch |
@@ -434,6 +435,37 @@ ssh-remote> _
 
 **cwd mapping**: start `ssh-remote` inside a mount path and the remote side `cd`s to the
 matching directory — local and remote paths always stay in sync.
+
+#### 6.2.2 Tab completion
+
+Press **Tab** in the interactive shell. Three layers, fastest first:
+
+| Layer | Completes | Latency |
+|---|---|---|
+| L1 | local builtins: `exit` `help` `gpu` `raw` `list` … | 0 (local) |
+| L2 | remote command names: `gpustat` `htop` `nvidia-smi` … | ~50ms first, cached after |
+| L3 | remote paths: `cd /home/wa<TAB>` → `cd /home/<user>/` | ~18ms, cached after |
+
+```
+ssh-remote> gpust<TAB>              -> gpustat
+ssh-remote> cd /home/wa<TAB>        -> cd /home/<user>/
+ssh-remote> cat /etc/host<TAB>      -> lists hosts / hostname / host.conf ...
+ssh-remote> cd AD<TAB>              -> cd ADMN/
+```
+
+Directory candidates get a trailing slash so you can keep typing deeper; file candidates
+don't. With several matches, pressing Tab twice lists them all.
+
+**Argument completion is not implemented** (`git checkout <TAB>` listing branches) — the
+server has no bash-completion installed, so there is no reliable source for it, and guessing
+would produce wrong candidates.
+
+**Tab does nothing while a command is running** — that's deliberate: a query then would just
+stall, and might interfere with the running task. The directory cache is invalidated after
+`cd`, so the next completion sees the new directory.
+
+Completion queries use a separate read-only channel: they never touch `cd`/`export` state and
+never interrupt a running task.
 
 **Long jobs**: use `nohup ... &` so they survive a dropped connection.
 

@@ -22,6 +22,7 @@
  */
 import * as readline from 'node:readline';
 import * as engine from './lib/engine.mjs';
+import { makeCompleter, resetCompletionCache } from './lib/complete.mjs';
 
 const SUBCOMMANDS = ['setup', 'umount', 'list', 'exec', 'rclone', 'gpu', 'help'];
 
@@ -295,6 +296,18 @@ async function runShell(srv) {
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdout.isTTY });
 
+  // Tab 补全。必须是 (line, callback) 的异步形式 —— readline 支持这种签名,
+  // 于是补全可以走长连接(4-35ms)问远端, 不需要另开通道。
+  // 三个约束:
+  //   1) busy 时直接放弃: 任务运行期间发查询只会等, 还可能干扰正在跑的任务
+  //   2) busy 判定用busy/working, 不能只看 busy —— 队列里还有待执行命令时也该拦
+  //   3) 补全失败必须安静: 任何一个网络抖动都不该在输入行上炸出错误
+  if (process.stdout.isTTY) {
+    rl.completer = makeCompleter(srv, {
+      isBusy: () => busy || working,
+    });
+  }
+
   const finish = () => {
     if (closed && !working && queue.length === 0) {
       if (rex) rex.close();
@@ -403,6 +416,8 @@ async function runShell(srv) {
             } else {
               await runRemote(line);
             }
+            // cd 之后目录补全缓存就过期了 (相对路径 '.' 指向变了)
+            if (/^\s*cd\b/.test(line)) resetCompletionCache();
           } finally {
             busy = false;
           }
@@ -492,7 +507,7 @@ async function runShell(srv) {
     console.log(` ssh-remote - remote forwarding shell`);
     console.log(` server: ${srv.name} ${srv.user}@${srv.host}  channel: ${transport === 'persist' ? 'persistent SSH (ms-level)' : 'tmux (fallback)'}`);
     console.log(` remote cwd: ${syncInfo}`);
-    console.log(' exit/Ctrl+D to leave - Ctrl+C interrupts the running command - raw <cmd> full-screen - help for help');
+    console.log(' exit/Ctrl+D to leave - Ctrl+C interrupts the running command - raw <cmd> full-screen - Tab completes - help for help');
     console.log('------------------------------------------------------------');
   })();
 

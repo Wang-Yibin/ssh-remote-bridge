@@ -10,8 +10,10 @@
 #
 # Wire (本地 -> 远端):
 #   <sendts>|C <token> <base64命令>   执行一条命令（继承上一次的 cd/env）
-#   F <token> <base64命令>同 C, 但要求边跑边回传增量输出（S 帧）
-#   X <token>中断当前任务: SIGTERM 进程组, 2s 后升级 KILL
+#   <sendts>|F <token> <base64命令>   同 C, 但要求边跑边回传增量输出（S 帧）
+#   <sendts>|Q <token> <base64查询>   只读探查（Tab 补全用）: 只读继承 cwd,
+#                                    不建task、不写回状态文件, 回O 帧后立刻结束
+#   X <token>                         中断当前任务: SIGTERM 进程组, 2s 后升级 KILL
 #   N <token>                         空操作（保活探测）
 # Wire (远端 -> 本地):
 #   T <token> read=<t>                任务已启动
@@ -171,6 +173,20 @@ while :; do
     N)
       rest=${rest#* }
       tok2=${rest%% *}
+      printf 'D %s 0\n' "$tok2"
+      ;;
+    Q)
+      # 查询帧: 只读探查, 供 Tab 补全用。
+      # 关键: 不走 srb_task(那会 . "$SRB_STATE" 再写回状态, 补全探查会把
+      # 自己的 cd/env 存进跨命令状态里); 不建task, 不占 curpid, 立刻回帧。
+      rest=${rest#* }
+      tok2=${rest%% *}
+      q64=${rest#* }
+      [ -n "$tok2" ] || continue
+      . "$SRB_STATE" 2>/dev/null   # 只读继承当前 cwd, 不写回
+      qout=$(printf '%s' "$q64" | /usr/bin/base64 -d 2>/dev/null | /bin/bash 2>/dev/null)
+      # O 必须在 D 之前: 本地收到 D 就resolve 并丢弃该 token, D 之后的帧会被当迟到帧丢掉
+      printf 'O %s %s\n' "$tok2" "$(printf '%s' "$qout" | /usr/bin/base64 -w0 2>/dev/null)"
       printf 'D %s 0\n' "$tok2"
       ;;
     *)

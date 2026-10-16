@@ -437,6 +437,7 @@ ssh-remote> _
 | `tail -f x.log` / `ping <host>` | **自动流式**：跟着滚 |
 | `gpu` / `gpu -w` | GPU 快照 / 持续刷新 |
 | `htop`（任何要 TTY 的程序） | 提示改用 `raw htop`（见 §6.2.1） |
+| **Tab** | 补全：命令名、内建命令、远端路径（见 §6.2.2） |
 | `exit` / `quit` / Ctrl+D | 退出本地 shell（断开长连接） |
 | Ctrl+C | **中断正在运行的远程命令**（杀远端进程组）；不退出，空闲时清空输入行 |
 | `raw vim x.txt` 或 `! vim x.txt` | 全屏直连模式（plink -t），适用于 vim / htop / top / watch |
@@ -444,6 +445,33 @@ ssh-remote> _
 | 其它任何命令 | 同上，送服务器执行（`cd`/`export` 跨命令保持） |
 
 **cwd 自动映射**：在挂载目录里启动 `ssh-remote`，远端会自动 `cd` 到对应路径——本地和远程始终一致。
+
+### 6.2.2 Tab 补全
+
+交互 shell 里按 **Tab** 即可补全，三层由快到慢：
+
+| 层 | 补什么 | 延迟 |
+|---|---|---|
+| L1 | 本地内建：`exit` `help` `gpu` `raw` `list` … | 0（本地） |
+| L2 | 远端命令名：`gpustat` `htop` `nvidia-smi` … | 首次 ~50ms，之后走缓存 |
+| L3 | 远端路径：`cd /home/wa<TAB>` → `cd /home/<user>/` | ~18ms，之后走缓存 |
+
+```
+ssh-remote> gpust<TAB>              -> gpustat
+ssh-remote> cd /home/wa<TAB>        -> cd /home/<user>/
+ssh-remote> cat /etc/host<TAB>      -> 列出 hosts / hostname / host.conf ...
+ssh-remote> cd AD<TAB>              -> cd ADMN/
+```
+
+目录候选自动带尾斜杠，可以直接接着敲下一层；文件候选不带。多个候选时按两次 Tab 会列出全部。
+
+**参数补全（`git checkout <TAB>` 列出分支名）没做**——服务器上没有 bash-completion，
+拿不到可靠信息，硬做只会给出错误候选。
+
+**任务运行期间按 Tab 不响应**，这是有意的：此刻发查询只会干等，还可能干扰正在跑的任务。
+`cd` 之后目录缓存会自动失效，下次补全拿的是新目录。
+
+补全查询走独立的只读通道，**不会污染 `cd`/`export` 状态**，也不会打断正在运行的任务。
 
 **长任务正确姿势**（需要看着进度就用 `nohup ... &`，断线也不杀）：
 
