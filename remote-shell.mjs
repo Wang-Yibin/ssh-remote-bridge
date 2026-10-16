@@ -21,6 +21,8 @@
  *   其余命令              经长连接送到服务器执行（cd/export 状态跨命令保持）
  */
 import * as readline from 'node:readline';
+import * as fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import * as engine from './lib/engine.mjs';
 import { makeCompleter, resetCompletionCache } from './lib/complete.mjs';
 
@@ -228,7 +230,7 @@ function doRclone(profile) {
     process.exit(1);
   }
   const exe = engine.rcloneExePath();
-  if (!require('node:fs').existsSync(exe)) {
+  if (!fs.existsSync(exe)) {
     console.error(`[ssh-remote] rclone.exe not found at ${exe} (this package should ship rclone\\rclone.exe)`);
     process.exit(1);
   }
@@ -237,14 +239,13 @@ function doRclone(profile) {
   const conf = engine.buildRcloneConf(srv);
   console.log(`[ssh-remote] rclone mount ${srv.name}:/${srv.remote} -> ${srv.drive}`);
   console.log('[ssh-remote] keep this window open to stay mounted; close it or Ctrl+C to unmount');
-  const { spawnSync } = require('node:child_process');
   const r = spawnSync(
     exe,
     ['mount', '--config', conf, `${srv.name}:/${srv.remote}`, srv.drive, '--network-mode', '--vfs-cache-mode', 'writes', '--dir-cache-time', '30s'],
     { stdio: 'inherit', windowsHide: false }
   );
   try {
-    require('node:fs').unlinkSync(conf);
+    fs.unlinkSync(conf);
   } catch (_) {}
   if (r.status && r.status !== 0) console.log(`[ssh-remote] rclone exited with code ${r.status}`);
 }
@@ -253,7 +254,6 @@ function runRaw(srv, cmd) {
   if (!cmd) return;
   console.log(`[ssh-remote] raw full-screen mode: ${cmd}`);
   const cfg = engine.loadConfig();
-  const { spawnSync } = require('node:child_process');
   const args = ['-ssh', '-batch', '-P', String(srv.port), '-l', srv.user, '-t'];
   if (srv.hostkey) args.push('-hostkey', srv.hostkey);
   if (srv.keyFile) args.push('-i', srv.keyFile);
