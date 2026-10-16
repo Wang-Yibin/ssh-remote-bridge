@@ -13,7 +13,7 @@
 import * as readline from 'node:readline';
 import * as engine from '../lib/engine.mjs';
 
-const SERVER_INFO = { name: 'ssh-remote-bridge', version: '1.0.0' };
+const SERVER_INFO = { name: 'ssh-remote-bridge', version: '1.1.0' };
 const DEBUG = !!process.env.SRB_DEBUG;
 
 function log(...args) {

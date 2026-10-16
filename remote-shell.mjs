@@ -23,7 +23,56 @@
 import * as readline from 'node:readline';
 import * as engine from './lib/engine.mjs';
 
-const SUBCOMMANDS = ['setup', 'umount', 'list', 'exec', 'rclone', 'help'];
+const SUBCOMMANDS = ['setup', 'umount', 'list', 'exec', 'rclone', 'gpu', 'help'];
+
+// ANSI 控制码。控制台默认 GBK, 输出 UTF-8 前先切到 UTF-8 才不会出现乱码
+const CLR = '[H[2J'; // 清屏 + 光标归位
+const HIDE_CURSOR = '[?25l';
+const SHOW_CURSOR = '[?25h';
+
+/** 持续刷新的命令: 这些天然输出纯文本循环, 不需要 PTY, 直接流式回传 */
+/** 这类命令在长连接上跑不起来（要 PTY / 键盘输入), 提示走 raw */
+function needsRawHint(line) {
+  const first = (line.trim().split(/\s+/)[0] || '').toLowerCase();
+  if (!first) return null;
+  if (first === 'clear') return null; // clear 在本地没意义
+  const base = first.split('/').pop();
+  if (['htop', 'top', 'nvtop', 'nvitop', 'btop', 'vim', 'vi', 'nano', 'emacs', 'man', 'less', 'tmux', 'screen', 'fzf', 'lazygit'].includes(base)) {
+    return base;
+  }
+  return null;
+}
+
+/**
+ * 判断是否「持续刷新」类命令 —— 这些命令永远不自己结束, 不流式就只能干等。
+ * 只认明确会循环的命令, 不做前缀猜测 (比如 "ls" 不是, "ls -f" 也不是)。
+ */
+function isLiveRefresh(line) {
+  const t = line.trim();
+  if (!t) return false;
+  // gpustat -i / -i 2 / -w ; nvidia-smi -l 2 ; tail -f ; ping host
+  const first = t.split(/\s+/)[0].split('/').pop().toLowerCase();
+  if (first === 'ping' || first === 'tail' || first === 'journalctl' || first === 'docker' || first === 'kubectl') {
+    // 这些默认就是持续输出 (tail 不带 -f 是一次性的, 但流式也无害)
+    return true;
+  }
+  if (first === 'gpustat') return /(^|\s)(-\w*\s*)*(-i|--interval|--watch|-w)(\s|=|$)/.test(t);
+  if (first === 'nvidia-smi') return /(^|\s)-l(\s|=|$)/.test(t);
+  if (first === 'watch') return true;
+  return false;
+}
+
+/**
+ * 这类命令自己会清屏/原地刷新 (输出里没有 ANSI 码, 会无限追加),
+ * 所以本地每批到达要先清一次屏, 否则几秒就刷出几千行。
+ */
+function isSelfClearing(line) {
+  const t = line.trim();
+  if (!t) return false;
+  const first = t.split(/\s+/)[0].split('/').pop().toLowerCase();
+  if (first === 'gpustat') return /(^|\s)(-\w*\s*)*(-i|--interval|--watch|-w)(\s|=|$)/.test(t);
+  return false;
+}
 
 function printHelp(srv) {
   console.log([
@@ -36,6 +85,9 @@ function printHelp(srv) {
     '  ssh-remote setup [profile]          mount: net use drive letter',
     '  ssh-remote umount [profile]         remove the drive mapping',
     '  ssh-remote exec <profile> <cmd...>  run one command and exit',
+    '  ssh-remote exec -f <profile> <cmd...>  same, but stream output live',
+    '  ssh-remote gpu [profile]           one-shot GPU snapshot (gpustat)',
+    '  ssh-remote gpu -w [profile]        keep refreshing the GPU view, Ctrl+C to stop',
     '  ssh-remote rclone [profile]         fallback mount via rclone',
     '  ssh-remote help                     this help',
     '',
@@ -45,9 +97,14 @@ function printHelp(srv) {
     '                          when idle, clears the input line',
     '  raw <cmd>               full-screen passthrough (plink -t), for vim/htop/top',
     '  ! <cmd>                 same as raw',
+    '  gpu | gpu -w            GPU snapshot / live refresh',
     '  help | ?                help',
     '  anything else           runs on the server over the persistent channel',
     '                          (cd / export state persists between commands)',
+    '',
+    'live-refreshing commands (gpustat, nvidia-smi -l, tail -f, ping) stream',
+    'their output as it arrives. Full-screen programs (htop, top, vim) need PTY',
+    'and therefore need "raw <cmd>" - they cannot run on the fast channel.',
     '',
     `config: ${engine.CONFIG_PATH}`,
     srv ? `default server: ${srv.name} (${srv.user}@${srv.host})` : '',
@@ -92,8 +149,11 @@ function doUmount(profile) {
   console.log(`[ssh-remote] done. ${tail}`);
 }
 
-async function doExec(profile, cmd) {
+async function doExec(profile, cmd, follow) {
   const srv = engine.getServer(profile);
+  if (follow) {
+    return doStream(srv, cmd, 'follow');
+  }
   const r = await engine.execOnSmart(srv, cmd, { timeout: 300 });
   if (r.output && r.output.trim()) process.stdout.write(r.output.endsWith('\n') ? r.output : r.output + '\n');
   engine.closeAllPersist();
@@ -102,6 +162,61 @@ async function doExec(profile, cmd) {
     process.exit(2);
   }
   process.exit(r.exitCode === null ? 3 : r.exitCode);
+}
+
+/**
+ * 流式跑一条持续输出的命令: 边跑边打印, Ctrl+C 中断。
+ * clearEach=true 时每批到达先清屏（用于 gpustat -i 这类自己不带清屏码的循环刷新命令）
+ */
+async function doStream(srv, cmd, { clearEach = false } = {}) {
+  let pending = '';
+  const started = Date.now();
+  const tty = process.stdout.isTTY;
+  if (tty) process.stdout.write(HIDE_CURSOR);
+  else if (clearEach) console.log('[ssh-remote] --clear needs a TTY; showing everything in order');
+
+  const onStream = (chunk) => {
+    if (clearEach) {
+      process.stdout.write(CLR);
+      process.stdout.write(chunk);
+      pending = chunk; // 只留最后一批, 用于结束时判断是否有残留
+      return;
+    }
+    process.stdout.write(chunk);
+    pending = chunk;
+  };
+
+  const r = await engine.execOnSmart(srv, cmd, { timeout: 86400, stream: true, onStream });
+  if (tty) process.stdout.write(SHOW_CURSOR);
+  // 非 clearEach 模式下若最后一批没带换行, 补一个, 免得退出码行粘上去
+  if (!clearEach && pending && !pending.endsWith('\n')) process.stdout.write('\n');
+  engine.closeAllPersist();
+  if (r.interrupted || r.aborted) {
+    console.log(`[ssh-remote] interrupted after ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  } else if (r.timedOut) {
+    console.log('[ssh-remote] timed out');
+  } else if (r.spawnFailed) {
+    // plink 被外部杀掉 (Ctrl+C / timeout / 关窗口) -> 143 = 128+SIGTERM, 属正常停止,
+    // 不是故障, 别吓唬用户
+    if (/code=143|signal=TERM|SIGTERM|killed/i.test(r.error || '')) {
+      console.log(`[ssh-remote] stopped after ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    } else {
+      console.error(`[ssh-remote] channel error: ${r.error}`);
+      process.exit(2);
+    }
+  } else if (r.exitCode) {
+    console.log(`[ssh-remote] exit ${r.exitCode}`);
+  }
+  process.exit(r.exitCode === null ? (r.spawnFailed ? 0 : 3) : r.exitCode);
+}
+
+/** ssh-remote gpu [-w] [profile] — 看 GPU。-w 持续刷新 */
+async function doGpu(argv) {
+  const follow = argv.includes('-w') || argv.includes('--watch');
+  const profile = argv.find((a) => !a.startsWith('-')) || null;
+  const srv = engine.getServer(profile);
+  const cmd = follow ? 'gpustat -i 2 --no-color' : 'gpustat --no-color';
+  return doStream(srv, cmd, { clearEach: follow });
 }
 
 /** 备用挂载: rclone mount 到盘符 (符号链接自动指过来) */
@@ -187,6 +302,36 @@ async function runShell(srv) {
     }
   };
 
+  /**
+   * 在交互 shell 里流式跑一条持续输出的命令。
+   * 关键点: 流式期间 readline 仍在后台活着, 若继续rl.prompt() 会把提示符
+   * 插到输出中间 (之前光标狂左移就是这么来的)。所以这里只写 stdout, 不碰 prompt,
+   * 结束后由 drain() 统一重画一次。
+   */
+  async function runRemoteStreaming(line, clearEach) {
+    const tty = process.stdout.isTTY;
+    if (tty) process.stdout.write(HIDE_CURSOR);
+    let sawAny = false;
+    const onStream = (chunk) => {
+      sawAny = true;
+      if (clearEach) process.stdout.write(CLR);
+      process.stdout.write(chunk);
+    };
+    const res = await engine.execOnPersist(srv, line, { timeout: 86400, stream: true, onStream });
+    if (tty) process.stdout.write(SHOW_CURSOR);
+    if (clearEach) {
+      // 循环刷新类: 结束时给个空行, 免得下一条命令提示符贴在最后一行内容后面
+      process.stdout.write('\n');
+    } else if (sawAny && !res.interrupted) {
+      // 普通流式 (tail -f 之类): 不额外处理, reportResult 会补换行
+    }
+    if (res.lost) {
+      console.log(`[ssh-remote] connection lost (${res.error}); reconnecting on next command`);
+      return;
+    }
+    reportResult(res);
+  }
+
   async function runRemote(line) {
     if (transport === 'persist' && rex) {
       const res = await engine.execOnPersist(srv, line, { timeout: 86400 });
@@ -223,14 +368,41 @@ async function runShell(srv) {
           break;
         } else if (line === 'help' || line === '?') {
           printHelp(srv);
+        } else if (line === 'gpu' || line === 'gpu -w' || line === 'gpu --watch') {
+          const follow = line !== 'gpu';
+          const cmd = follow ? 'gpustat -i 2 --no-color' : 'gpustat --no-color';
+          busy = true;
+          try {
+            if (transport === 'persist' && rex) await runRemoteStreaming(cmd, follow);
+            else reportResult(engine.execOn(srv, cmd));
+          } finally {
+            busy = false;
+          }
         } else if (line.startsWith('raw ')) {
           runRaw(srv, line.slice(4).trim());
         } else if (line.startsWith('!')) {
           runRaw(srv, line.slice(1).trim());
+        } else if (needsRawHint(line) && transport === 'persist') {
+          // htop/top/vim 这类要 PTY 的程序在长连接上必然失败, 直接给可执行的指引,
+          // 而不是让用户看着 "Error opening terminal" 猜
+          const hint = needsRawHint(line);
+          console.log(`[ssh-remote] "${hint}" needs a real terminal (PTY); the fast channel has none.`);
+          console.log(`[ssh-remote] run: raw ${line}`);
         } else {
           busy = true;
           try {
-            await runRemote(line);
+            // 持续刷新的命令自动走流式: 否则 gpustat -i / tail -f 要等命令结束
+            // 才一次性吐出所有内容, 等于没法用
+            const clearEach = isSelfClearing(line);
+            if (clearEach || isLiveRefresh(line)) {
+              if (transport === 'persist' && rex) {
+                await runRemoteStreaming(line, clearEach);
+              } else {
+                reportResult(engine.execOn(srv, line));
+              }
+            } else {
+              await runRemote(line);
+            }
           } finally {
             busy = false;
           }
@@ -352,13 +524,19 @@ async function main() {
     return;
   }
   if (first === 'exec') {
-    const profile = argv[1];
-    const cmd = argv.slice(2).join(' ');
+    const follow = argv.includes('-f') || argv.includes('--follow');
+    const rest = argv.slice(1).filter((a) => a !== '-f' && a !== '--follow');
+    const profile = rest[0];
+    const cmd = rest.slice(1).join(' ');
     if (!cmd) {
-      console.error('usage: ssh-remote exec <profile> <command...>');
+      console.error('usage: ssh-remote exec [-f|--follow] <profile> <command...>');
       process.exit(1);
     }
-    await doExec(profile, cmd);
+    await doExec(profile, cmd, follow);
+    return;
+  }
+  if (first === 'gpu') {
+    await doGpu(argv.slice(1));
     return;
   }
   if (first === 'rclone') {

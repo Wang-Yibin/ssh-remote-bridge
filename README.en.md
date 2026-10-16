@@ -353,6 +353,9 @@ After that `ssh-remote` works in any terminal. It also works without installing:
 | `ssh-remote setup [profile]` | mount: create the drive mapping (+ optional symlink) |
 | `ssh-remote umount [profile]` | remove the drive mapping |
 | `ssh-remote exec <profile> <cmd...>` | run one command and exit (script friendly) |
+| `ssh-remote exec -f <profile> <cmd...>` | same, but **prints output as it arrives** |
+| `ssh-remote gpu [profile]` | one-shot GPU snapshot (runs `gpustat`) |
+| `ssh-remote gpu -w [profile]` | **keep refreshing** the GPU view, Ctrl+C to stop |
 | `ssh-remote rclone [profile]` | fallback mount via rclone |
 | `ssh-remote help` | help |
 
@@ -363,6 +366,46 @@ ssh-remote exec myserver nvidia-smi
 ssh-remote exec myserver "tail -5 ~/train.log"
 echo exit code = %errorlevel%
 ```
+
+#### 6.2.1 Live output (streaming)
+
+Add `-f` (`--follow`) and the command prints as it runs instead of dumping everything at the end:
+
+```bat
+:: before: 8 seconds of silence, then 4 lines at once
+ssh-remote exec myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
+
+:: now: one batch every 2 seconds
+ssh-remote exec -f myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
+```
+
+These commands **stream automatically inside the interactive shell** — no flag needed:
+
+| Command | Effect |
+|---|---|
+| `gpustat -i 2` | refreshes every 2s, redrawing in place (auto-clears, never floods thousands of lines) |
+| `nvidia-smi -l 2` | GPU state every 2s |
+| `tail -f xxx.log` | follow a training log |
+| `ping <host>` | continuous ping |
+| `watch <cmd>` | continuous refresh |
+
+For GPUs just use `gpu -w` (same as `gpustat -i 2`, clearing included):
+
+```bat
+ssh-remote gpu -w
+```
+
+**Note**: full-screen TUI programs (`htop`, `top`, `vim`, `nvitop`) **cannot run on the fast
+channel** — the persistent connection has no PTY, and they need a real terminal to draw on.
+Typing `htop` gets you a pointer instead of a cryptic failure:
+
+```
+[ssh-remote] "htop" needs a real terminal (PTY); the fast channel has none.
+[ssh-remote] run: raw htop
+```
+
+`raw htop` already works (it goes through `plink -t`, which allocates a real PTY). The price
+is one extra SSH handshake per invocation (~5s).
 
 ### 6.3 Inside the interactive shell
 
@@ -380,6 +423,10 @@ ssh-remote> _
 | Input | Behaviour |
 |---|---|
 | any command | forwarded to the server; output and exit code come back (ms-level) |
+| `gpustat -i 2` | **auto-streams**: refreshes every 2s, redrawn in place |
+| `tail -f x.log` / `ping <host>` | **auto-streams** |
+| `gpu` / `gpu -w` | GPU snapshot / live refresh |
+| `htop` (anything needing a TTY) | points you at `raw htop` instead (see §6.2.1) |
 | `exit` / `quit` / Ctrl+D | leave the local shell (drops the persistent connection) |
 | Ctrl+C | **interrupt the running remote command** (kills the remote process group); does not exit, clears the line when idle |
 | `raw vim x.txt` or `! vim x.txt` | full-screen mode (plink -t) for vim / htop / top / watch |
@@ -737,8 +784,11 @@ Four things people trip over:
    portable.
 2. **4096-byte pty line limit**: `write_file` works around it automatically with base64 chunking;
    a single exec output is capped at 30000 characters (configurable anti-flood guard).
-3. **Interactive full-screen programs** (vim/htop/top) do not go through the frame protocol —
-   use `ssh-remote`'s `raw <cmd>` mode.
+3. **Full-screen interactive programs** (vim/htop/top/nvitop) cannot use the fast channel —
+   the persistent connection has no PTY. Use `ssh-remote`'s `raw <cmd>` mode, which goes through
+   `plink -t` and allocates a real PTY (cost: one SSH handshake, ~5s).
+   Pure-text refreshing commands (`gpustat -i` / `nvidia-smi -l` / `tail -f` / `ping`) are
+   **unaffected** — they stream live over the fast channel (see §6.2.1).
 4. **One drive letter per server, and letters must be unique.** There are only 26, which is
    plenty, but duplicates evict each other — `remount_all.cmd` checks on every run.
 5. **The persistent connection is scoped to one MCP server process.** Each WorkBuddy/Codex

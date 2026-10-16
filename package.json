@@ -1,6 +1,6 @@
 {
   "name": "ssh-remote-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Map a remote Linux server's home directory to a local Windows drive and forward every command to it - CLI + MCP server, multi-server, Windows only",
   "type": "module",
   "bin": {
@@ -32,6 +32,7 @@
   "scripts": {
     "test": "node experiments/mcp_dev_suite.mjs",
     "remount": "node tools/restore_all.mjs",
-    "check-mounts": "node tools/restore_all.mjs --check"
+    "check-mounts": "node tools/restore_all.mjs --check",
+    "test:stream": "node experiments/test_stream.mjs"
   }
 }

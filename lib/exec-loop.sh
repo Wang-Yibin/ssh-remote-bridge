@@ -10,11 +10,13 @@
 #
 # Wire (本地 -> 远端):
 #   <sendts>|C <token> <base64命令>   执行一条命令（继承上一次的 cd/env）
-#   X <token>                         中断当前任务: SIGTERM 进程组, 2s 后升级 KILL
+#   F <token> <base64命令>同 C, 但要求边跑边回传增量输出（S 帧）
+#   X <token>中断当前任务: SIGTERM 进程组, 2s 后升级 KILL
 #   N <token>                         空操作（保活探测）
 # Wire (远端 -> 本地):
 #   T <token> read=<t>                任务已启动
 #   P <token> <base64 cwd>            任务后的远程当前目录
+#   S <token> <base64 增量输出>        任务运行中的增量输出（仅 F 帧任务会发）
 #   O <token> <base64 输出>            stdout+stderr（base64 -w0, 单行）
 #   D <token> <退出码>                 任务结束（终帧）
 export LC_ALL=C
@@ -33,6 +35,9 @@ command -v setsid >/dev/null 2>&1 && SETSID="setsid"
 curpid=""
 curtok=""
 xat=""
+stream=0                 # 本任务是否要求流式回传
+soff=0                   # 已发出字节数（增量基准）
+slast=0                  # 上次检查时的时刻（限流用）
 
 # 任务体: 继承状态文件 -> 执行命令 -> 落盘新状态(cwd+env) -> 退出
 srb_task() {
@@ -45,15 +50,34 @@ srb_task() {
 }
 export -f srb_task
 
+# 发一帧 S: 把输出文件里 [soff, soff+delta) 的新增字节切出来 base64 发走
+# 关键:不能把裸文本先存进 shell 变量再 base64 —— $(...) 命令替换会吞掉尾部换行,
+# 流式文本输出那样会全部粘成一行。必须让原始字节直接流进 base64。
+srb_stream() {
+  [ "$stream" = "1" ] || return 0
+  sz=$(/usr/bin/stat -c %s "$SRB_OUT" 2>/dev/null) || return 0
+  [ -n "$sz" ] || return 0
+  [ "$sz" -gt "$soff" ] || return 0
+  # head -c 卡住长度: stat 与 tail 之间文件可能又长了, 这样既不漏也不重发
+  b64=$(/usr/bin/tail -c "+$((soff + 1))" "$SRB_OUT" 2>/dev/null | /usr/bin/head -c "$((sz - soff))" | /usr/bin/base64 -w0 2>/dev/null)
+  [ -n "$b64" ] || return 0
+  printf 'S %s %s\n' "$curtok" "$b64"
+  soff=$sz
+}
+
 srb_done() {
   wait "$curpid" 2>/dev/null
   ec=$?
   curpid=""
+  # 收尾: 把还没发出去的尾巴补齐, 否则 srb_stream 的整行截断会吃掉最后一段
+  srb_stream
   printf 'P %s %s\n' "$curtok" "$(/usr/bin/base64 -w0 < "$SRB_PWD" 2>/dev/null)"
   printf 'O %s %s\n' "$curtok" "$(/usr/bin/base64 -w0 < "$SRB_OUT" 2>/dev/null)"
   printf 'D %s %s\n' "$curtok" "$ec"
   curtok=""
   xat=""
+  stream=0
+  soff=0
 }
 
 srb_cleanup() {
@@ -73,12 +97,22 @@ while :; do
       buf="$buf$line"
       if ! kill -0 "$curpid" 2>/dev/null; then
         srb_done
-      elif [ -n "$xat" ]; then
-        now=${EPOCHREALTIME%.*}
-        if [ "$now" -ge "$((xat + 2))" ] 2>/dev/null; then
-          kill -KILL -"$curpid" 2>/dev/null
-          kill -KILL "$curpid" 2>/dev/null
-          xat=""
+      else
+        # 任务还活着: 有增量就发一帧 S（限流: 距上次检查 >=20ms 才stat 一次）
+        if [ "$stream" = "1" ]; then
+          snow=${EPOCHREALTIME/./}
+          if [ -z "$slast" ] || [ "$snow" -ge "$((slast + 20))" ]; then
+            slast=$snow
+            srb_stream
+          fi
+        fi
+        if [ -n "$xat" ]; then
+          now=${EPOCHREALTIME%.*}
+          if [ "$now" -ge "$((xat + 2))" ] 2>/dev/null; then
+            kill -KILL -"$curpid" 2>/dev/null
+            kill -KILL "$curpid" 2>/dev/null
+            xat=""
+          fi
         fi
       fi
       continue
@@ -93,7 +127,7 @@ while :; do
   rest=${line#*|}
   tok=${rest%% *}
   case "$tok" in
-    C)
+    C | F)
       rest=${rest#* }
       tok2=${rest%% *}
       b64=${rest#* }
@@ -109,6 +143,16 @@ while :; do
         fi
         srb_done
       fi
+      # 截断输出文件: 复用同一个路径, 不截断会把上一条命令的残留当成本次增量发出去
+      : > "$SRB_OUT"
+      # C -> stream=0（跑完一次性回传）; F -> stream=1（边跑边发 S 帧）
+      if [ "$tok" = "F" ]; then
+        stream=1
+      else
+        stream=0
+      fi
+      soff=0
+      slast=0
       printf '%s' "$b64" | /usr/bin/base64 -d > "$SRB_CMD"
       $SETSID /bin/bash -c 'srb_task' >"$SRB_OUT" 2>&1 </dev/null &
       curpid=$!

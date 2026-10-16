@@ -366,6 +366,9 @@ npm install -g .
 | `ssh-remote setup [profile]` | 挂载：`net use` 盘符（持久化）+ 创建符号链接 |
 | `ssh-remote umount [profile]` | 卸载：删除盘符映射（符号链接保留） |
 | `ssh-remote exec <profile> <命令...>` | 执行单条命令后退出，适合脚本/批处理 |
+| `ssh-remote exec -f <profile> <命令...>` | 同上，但**边跑边打印**（长任务看实时输出） |
+| `ssh-remote gpu [profile]` | GPU 快照（等价 `gpustat`） |
+| `ssh-remote gpu -w [profile]` | **持续刷新** GPU 视图，Ctrl+C 停止 |
 | `ssh-remote help` | 帮助 |
 
 `ssh-remote exec` 示例（可脚本化，退出码透传）：
@@ -375,6 +378,44 @@ ssh-remote exec myserver nvidia-smi
 ssh-remote exec myserver "tail -5 ~/train.log"
 echo 退出码=%errorlevel%
 ```
+
+### 6.2.1 实时输出（流式）
+
+加 `-f`（`--follow`）后，命令**边跑边打印**，不再干等：
+
+```bat
+:: 以前：跑完 8 秒，一次性吐出 4 行
+ssh-remote exec myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
+
+:: 现在：每 2 秒出一批
+ssh-remote exec -f myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
+```
+
+下列命令在**交互 shell 里会自动走流式**，不用加任何参数：
+
+| 命令 | 效果 |
+|---|---|
+| `gpustat -i 2` | 每 2 秒刷新，原地重画（自动清屏，不会刷出几千行） |
+| `nvidia-smi -l 2` | 每 2 秒刷一次 GPU 状态 |
+| `tail -f xxx.log` | 跟着训练日志滚 |
+| `ping <host>` | 持续 ping |
+| `watch <cmd>` | 持续刷新 |
+
+想看 GPU 就用 `gpu -w`（等价于上面的 `gpustat -i 2`，已带清屏）：
+
+```bat
+ssh-remote gpu-w
+```
+
+**注意**：`htop` / `top` / `vim` / `nvitop` 这类**全屏 TUI 程序在快通道上跑不了**——
+长连接没有 PTY（伪终端），它们需要真终端才能画界面。直接输 `htop` 会得到提示：
+
+```
+[ssh-remote] "htop" needs a real terminal (PTY); the fast channel has none.
+[ssh-remote] run: raw htop
+```
+
+`raw htop` 现在就能用（走 `plink -t` 分配真 PTY），代价是每次要重走一次 SSH 握手（约 5 秒）。
 
 ### 6.3 交互 shell 内怎么用
 
@@ -392,6 +433,10 @@ ssh-remote> _
 | 输入 | 行为 |
 |---|---|
 | `nvidia-smi` | 原样送到服务器执行，输出 + 退出码回传（ms 级） |
+| `gpustat -i 2` | **自动流式**：每 2 秒刷新并原地重画 |
+| `tail -f x.log` / `ping <host>` | **自动流式**：跟着滚 |
+| `gpu` / `gpu -w` | GPU 快照 / 持续刷新 |
+| `htop`（任何要 TTY 的程序） | 提示改用 `raw htop`（见 §6.2.1） |
 | `exit` / `quit` / Ctrl+D | 退出本地 shell（断开长连接） |
 | Ctrl+C | **中断正在运行的远程命令**（杀远端进程组）；不退出，空闲时清空输入行 |
 | `raw vim x.txt` 或 `! vim x.txt` | 全屏直连模式（plink -t），适用于 vim / htop / top / watch |
@@ -748,7 +793,10 @@ ssh-remote dgx           :: 进新服务器的 shell，敲 hostname 验证
 
 1. **仅支持 Windows 本机**：net use / mklink / sshfs.r 都是 Windows 特性。Linux/macOS 可用 `sshfs` 直接挂载，执行引擎（`engine.mjs` 的 execOn）本身跨平台可复用。
 2. **pty 单行 4096 字节限制**：`write_file` 已自动 base64 分片绕过；单次 exec 输出上限 30000 字符（防爆缓冲，可调）。
-3. **交互式全屏程序**（vim/htop/top）不走哨兵协议，用 `ssh-remote` 的 `raw <cmd>` 模式。
+3. **交互式全屏程序**（vim/htop/top/nvitop）跑不了快通道 —— 长连接没有 PTY。
+   用 `ssh-remote` 的 `raw <cmd>` 模式（走 `plink -t` 分配真 PTY，代价是一次 SSH 握手约 5 秒）。
+   纯文本循环刷新的命令（`gpustat -i` / `nvidia-smi -l` / `tail -f` / `ping`）**不受影响**，
+   它们已在快通道上支持实时输出（见 §6.2.1）。
 4. **每次 exec 一次 plink 连接**：含 SSH 握手开销（约 1 秒），批量小命令建议合并成一条 shell 脚本执行。
 5. **每台服务器一个盘符，且盘符不能重复**：Windows 盘符资源有限（26 个），实际够用，但**重复会互相顶掉**——`remount_all.cmd` 每次运行前会自动检测并给出修改建议。
 6. **长连接作用域 = MCP server 进程**：每个 WorkBuddy/Codex 进程各持一条到服务器的 SSH 长连接，进程退出即断开。同一服务器开两个客户端会有两条连接，属正常；两边各自的命令执行互不影响。
