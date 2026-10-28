@@ -1,836 +1,341 @@
-# ssh-remote-bridge
+# ssh-remote-bridge 使用手册
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-5FA04E.svg)](https://nodejs.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D4.svg)](https://learn.microsoft.com/windows/)
+**当前版本：1.5.0 · Windows 本机连接 Linux 服务器 · CLI + MCP · 多服务器配置**
 
-**[中文](README.md)** | [English](README.en.md)
+将服务器目录挂载为本机盘符，供 Agent 使用宿主工具读写；通过持久 SSH 执行服务器命令。CLI 支持原生交互终端，MCP 支持任务增量输出和取消。
 
-> 远程服务器 **文件映射 + 命令转发** 系统（Windows 本机 ↔ Linux 服务器）
-> 包含三件套：**盘符映射**、**命令行转发**、**MCP server（给 AI 用）**
-> 支持多服务器、多账号密码、可插拔——加服务器只改一个配置文件。
-
-在 VS Code 里打开 `M:\` 就是服务器的文件，在终端里敲命令就是在服务器上执行，
-AI（WorkBuddy / Codex / 任何 MCP 客户端）也能直接调工具操作服务器。
-
-**毫秒级响应**：SSH 长连接复用，首次握手约 5.6s（成本在服务器侧 KEX/PAM），
-之后每条命令 **4-35ms**（实测），`cd` 和环境变量跨命令保持。
-
-```bat
-:: 1) 装依赖：Node.js >= 18 + plink.exe（必需，见 §4.1）
-::    挂文件映射还要 WinFsp + SSHFS-Win，本仓库不带安装包，请自行从官网下
-check_deps.cmd              :: 一键体检，缺什么会告诉你去哪下
-
-:: 2) 配服务器（复制模板改成自己的；或直接问 AI「帮我配一下这台服务器」）
-copy servers.example.json servers.json
-
-:: 3) 挂载 + 用起来
-setup_ssh-remote.cmd
-ssh-remote.cmd                :: 进入远程 shell
-
-:: 4) 电脑重启后恢复映射（随时可重复运行）
-remount_all.cmd
-```
-
-给 AI 用：
-
-```bat
-register_mcp.cmd          :: 注册到 WorkBuddy
-register_mcp_codex.cmd    :: 注册到 Codex
-```
-
-> **不依赖任何特定 AI 客户端** —— 实现的是标准 MCP 协议（stdio + JSON-RPC），
-> WorkBuddy、Codex、Claude Desktop 等任何 MCP 客户端都能接入。
-
-> **仓库只装源码，不含任何 `.exe` / `.msi`。** 需要驱动的话去官方站下（链接见 §4.1），
-> 这样clone 只有 200 多 KB，而且你拿到的一定是上游最新版。
-
----
-
-<details>
-<summary><b>完整说明书（12 章）</b></summary>
-
-# ssh-remote-bridge 使用说明书
-
----
+**本机项目目录：** `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd`。源码、恢复脚本和 `servers.json` 都在这里，挂载失效时仍可访问。换机器或移动项目后，以实际目录为准。
 
 ## 目录
 
-1. [这是什么](#1-这是什么)
-2. [架构总览](#2-架构总览)
-3. [文件清单](#3-文件清单)
-4. [快速开始（5 分钟）](#4-快速开始5-分钟)
-5. [servers.json 字段详解](#5-serversjson-字段详解)
-6. [ssh-remote 命令行使用详解](#6-ssh-remote-命令行使用详解)
-7. [MCP Server 使用详解](#7-mcp-server-使用详解)
-   - [**7.2 AI 首次接入：必须先向用户索要信息（硬性规则）**](#72-ai-首次接入必须先向用户索要信息硬性规则)
-8. [挂载机制详解（为什么这么设计）](#8-挂载机制详解为什么这么设计)
-9. [可插拔：如何添加新服务器](#9-可插拔如何添加新服务器)
-10. [安全说明](#10-安全说明)
-11. [故障排查](#11-故障排查)
-12. [已知限制](#12-已知限制)
+1. [Agent 操作规则](#1-agent-操作规则)
+2. [Agent 使用 MCP](#2-agent-使用-mcp)
+3. [本机挂载与会话外恢复](#3-本机挂载与会话外恢复)
+4. [ssh-remote 命令行](#4-ssh-remote-命令行)
+5. [安装、注册与服务器配置](#5-安装注册与服务器配置)
+6. [当前运行环境](#6-当前运行环境)
+7. [故障排查](#7-故障排查)
+8. [维护与更新记录](#8-维护与更新记录)
 
----
+## 1. Agent 操作规则
 
-## 1. 这是什么
+按 **效率 → 节省 token → 减少冗余上下文** 的顺序选择操作方式。
 
-一句话：**把远程 Linux 服务器的家目录挂到本地一个文件夹里（例如 `F:\<user>`），在这个文件夹里，看文件就是看服务器文件，跑命令就是在服务器上跑。**
+| 工作 | 使用位置与工具 |
+|---|---|
+| 搜索文件、局部读取、编辑、查看 diff | 宿主原生文件工具，直接操作可用的本地挂载目录 |
+| 小文件解析、格式转换、简单运算 | 本机命令工具和本机 CPU |
+| 测试、构建、训练、大规模分析、高 I/O 批量扫描 | MCP `exec` 或 CLI，在服务器执行 |
+| 文件不在映射范围内、挂载不可访问、宿主文件工具不可用 | SSH 后备 `read_file` / `write_file` |
+| 挂载、卸载、恢复盘符 | MCP 挂载工具，或 **Windows 本机**恢复脚本 |
 
-三个使用入口，覆盖三种场景：
+### 开始工作
 
-| 入口 | 适合谁 | 能干什么 |
-|---|---|---|
-| `F:\<user>` 文件夹 | 人 | VS Code / 资源管理器里直接浏览、编辑服务器上的文件 |
-| `ssh-remote` 命令行 | 人 | 在任意终端敲命令，原样送到服务器执行，退出码和输出原样返回 |
-| **MCP server** | AI 大模型 | AI 自己调工具在服务器上执行命令、读写文件、查状态、管挂载 |
+1. 复用已知的服务器 profile 和路径。未知时调用一次 `list_servers`，读取 `file_access`；不要每次操作前重新探测。
+2. 确认宿主能访问推荐的 `local_root`。例如远端根 `/home/example` 对应 `M:\`，则 `/home/example/project/app.py` 对应 `M:\project\app.py`。
+3. 先定位相关文件和行，再读取必要内容、做局部修改、查看 diff。避免整文件重写、重复回读和大规模本地网络扫描。
+4. 远端任务显式指定 `server` 和 Linux `cwd`，只取必要输出。不要把完整数据集、二进制或大型日志塞进对话。
 
-核心特性：
+### 必须区分
 
-- **完全利用服务器算力**：命令在服务器的 shell 里跑，CPU / GPU / conda 环境全部可用（多卡服务器实测正常访问）
-- **毫秒级响应**：SSH 长连接复用，握手只付一次（约 5.6s，成本在服务器侧 KEX/PAM），之后每条命令 **4-35ms**（实测）
-- **状态不丢**：命令跑在服务器端长连接执行器里，`cd`、环境变量跨命令保留
-- **退出码真实回传**：`echo $?` 级别的保真，脚本编排可靠
-- **特殊字符安全**：命令经 base64 帧传输，引号、管道、`$`、换行都不会坏
-- **Ctrl+C 真中断**：中断帧打到远端进程组（SIGTERM，2s 后升级 KILL），不会误杀本机
-- **多服务器可插拔**：所有服务器集中在 `servers.json`，加一台服务器 = 加一段 JSON
-- **零第三方 Node 依赖**：只用 Node 内置模块 + 系统 plink + SSHFS-Win
+- 挂载文件就是服务器上的同一份数据，修改会直接影响服务器；挂载 I/O 仍经过网络。
+- 宿主文件工具使用 Windows 路径；MCP `exec`、SSH 文件工具使用 Linux 绝对路径。`exec` 始终是远端命令，不是本机终端。
+- 已知映射仅在配置改变或访问失败时刷新。`list_servers` / `server_status` 不建立 SSH 连接。
+- 任何写入失败后，先检查文件实际内容，再决定是否重试或换通道；尤其不能重复追加。保留原始错误，不凭总结认定“sshfs 间歇问题”。
+- 复用保存的凭据，只询问缺少的信息；不猜测、不回显密码，不把凭据写进代码、日志或笔记。遵守宿主安全策略。
+- MCP 初始化会提供操作指引，实际工具选择仍由宿主和 Agent 决定。README 需要被读取，不保证新对话自动加载。
 
----
+## 2. Agent 使用 MCP
 
-## 2. 架构总览
+省略可选的 `server` 时使用默认 profile；多服务器任务建议显式指定。下面的 JSON 是工具调用参数示例。
 
-```
-┌───────────────────────── 本机 Windows ─────────────────────────┐
-│                                                                │
-│   M: ──net use──▶ SSHFS-Win      ( 可选: F:\xxx ──mklink──▶ M: ) │
-│   ▲                 │             mount 留空时不需要符号链接      │
-│   │                 │             (见 §8)                        │
-│   └─ VS Code / Explorer / 任何工具直接读写服务器文件  │           │
-│                                                                │
-│   ssh-remote CLI ──┐                                           │
-│            ├── plink (SSH 长连接) ──▶ 服务器 bash 循环执行器 ──┼──┐
-│   MCP ◀────┘         命令 base64 帧      输出/退出码/cwd 帧回传  │  │
-│                                                                │  │
-└────────────────────────────────────────────────────────────────┼──┘
-                                                                 ▼
-                                              Linux 服务器（完整 CPU/GPU/conda 环境）
-```
+### 2.1 发现映射
 
-### 命令转发协议（v4，已实测验证）
-
-以 `ssh-remote> nvidia-smi` 为例，背后发生的事：
-
-1. **建连（一次性）**：plink 连上服务器，把 `lib/exec-loop.sh`（base64 内联在连接命令行里）写到远端临时文件并执行，远端进入 bash 循环守着这条连接。**握手约 5.6 秒**——成本在服务器侧 SSH KEX/PAM，与客户端无关（VS Code Remote-SSH 首次连接同样等这么久）
-2. **传输**：本地把命令 base64 编码加 Token 成一帧发出；远端 `setsid` 起独立会话执行，输出重定向到临时文件
-3. **状态承接**：执行前先恢复上次的 `cd`/环境变量，执行后再存起来——**所以状态跨命令保持**
-4. **回传**：stdout+stderr、真实退出码、当前目录各自 base64 成一帧回传，本地拼装后删临时文件
-
-### 为什么快 / 为什么状态不丢
-
-| | 每条命令新开 SSH | 旧 tmux 转发 | **长连接执行器（本方案）** |
-|---|---|---|---|
-| 每条命令开销 | 完整握手 5.6s | 2 次握手 ≈ 11s | **4-35ms** |
-| `cd` / `conda activate` / `export` | 丢 | 保留 | **保留**（状态文件承接） |
-| 后台任务（`&`） | 随连接断开被杀 | 继续跑 | **继续跑** |
-| Ctrl+C 中断 | 只能断开 | 面板级 | **整进程组 SIGTERM → 2s 后 KILL** |
-| 首次开销 | 5.6s | 5.6s | 5.6s（之后 ms 级） |
-
-> 旧 tmux 通道保留为兜底：`SRB_TRANSPORT=tmux` 可强制走旧路；长连接建不起来时
-> （极少数服务器缺 base64/setsid）自动回落，无需手动干预。
-
----
-
-## 3. 文件清单
-
-```
-.
-├── servers.example.json  ★ 配置模板：复制成 servers.json 再填自己的值
-├── remote-shell.mjs      ★ ssh-remote CLI：交互 shell + setup/umount/list/exec 子命令
-├── ssh-remote.cmd          跨平台入口：双击用，或加进 PATH 后任意终端敲 ssh-remote
-├── setup_ssh-remote.cmd          一键挂载（薄包装 → ssh-remote setup）
-├── umount_ssh-remote.cmd         一键卸载（薄包装 → ssh-remote umount）
-├── remount_all.cmd                重启后一键恢复所有盘符映射（幂等，可重复跑）
-├── check_deps.cmd                依赖体检：缺什么直接给出官方下载地址
-├── register_mcp.cmd               注册到 WorkBuddy
-├── register_mcp_codex.cmd         注册到 Codex
-├── lib/
-│   ├── engine.mjs        ★ 核心引擎：CLI 和 MCP 共用（执行/读写/挂载/密钥）
-│   ├── persist.mjs       ★ 长连接执行器：RemoteExec 类（帧协议/超时中断/重连/保活）
-│   └── exec-loop.sh         ★ 远端执行循环脚本（协议 v4，建连时 base64 引导写入）
-├── mcp/
-│   └── server.mjs        ★ MCP server：stdio 协议，9 个工具
-├── tools/
-│   ├── register_mcp.mjs / register_mcp_codex.mjs   两个注册脚本的实现
-│   ├── restore_all.mjs   恢复脚本的实现（remount_all.cmd 调它）
-│   └── scan_package.py   分发包凭据泄漏扫描器
-├── experiments/          测试套件（58 项回归 + 并发 + 延迟基准）
-├── package.json          npm 包定义（bin: ssh-remote）
-└── README.md             本说明书
-```
-
-带 ★ 的是核心代码，约 1000 行，**零第三方 npm 依赖**（只用 Node 内置模块）。
-
-**不进版本库的文件**（`.gitignore` 已挡）：`servers.json`（含明文密码）、
-`servers.json.bak`、`rclone.conf`、`known_hosts`、日志、`dist/`、`rclone/`。
-
----
-
-## 4. 快速开始（5 分钟）
-
-### 4.1 前置条件（本机 Windows）
-
-**这个仓库不含任何二进制文件**（没有 `.msi`、没有 `.exe`）。所有依赖都从官方渠道下载：
-
-| 依赖 | 必需？ | 用途 | 下载 |
-|---|---|---|---|
-| **Node.js ≥ 18** | ✅ **必需** | 运行 CLI 和 MCP server | <https://nodejs.org>（选 LTS） |
-| **plink.exe** | ✅ **必需** | SSH 客户端 | <https://www.chiark.greenend.org.uk/~sgtatham/putty/>（PuTTY 自带，或单独取 plink.exe） |
-| WinFsp | ⭕ 仅文件映射 | Windows 文件系统驱动 | <https://winfsp.dev> 或 [GitHub Releases](https://github.com/winfsp/winfsp/releases) |
-| SSHFS-Win | ⭕ 仅文件映射 | 基于 WinFsp 的 SSH 文件系统 | [GitHub Releases](https://github.com/winfsp/sshfs-win/releases) |
-
-**只有前两项是硬需求。** WinFsp + SSHFS-Win 只在你想把服务器目录挂成
-Windows 盘符时才需要 —— 只用 `ssh-remote` 命令行或 MCP server 的话完全可以不装。
-
-下载完两个 `.msi` 后双击安装，或静默安装：
-
-```bat
-msiexec /i winfsp-2.1.25156.msi /qb /norestart
-msiexec /i sshfs-win-3.5.20357-x64.msi /qb /norestart
-```
-
-双击 `check_deps.cmd` 可以一键体检，看还缺什么。
-
-服务器端只需 `bash` + `base64` + `setsid`（util-linux，主流发行版默认自带）；
-只有旧 tmux 兜底通道才需要 `tmux`（`sudo apt install tmux`）。
-
-> **为什么不把安装包放进仓库？**
-> 两个 `.msi` 加 `node.exe` 加 `rclone.exe` 约 170MB。放进 git 的话，
-> 每次 clone 都要下载 170MB，而且 git 历史会永久保存这些文件（删掉也还在）。
-> 更麻烦的是版本会陈旧 —— 仓库锁死的版本没人更新。
-> 让你从官网拿，永远是最新版，clone 也只有 200 多 KB。
-
-> **plink 路径怎么配**：`servers.json` 里写绝对路径，或用环境变量 `SRB_PLINK` 覆盖。
-> 代码也支持相对路径（如 `"bin\\plink.exe"`），这样整个目录可以整包搬走。
-
-### 4.2 配置服务器
-
-编辑 `servers.json`（字段详解见[第 5 节](#5-serversjson-字段详解)）。最小可用配置：
+调用 `list_servers({})`，或在访问失败后调用 `server_status({"server":"5090"})`。返回的路径信息类似：
 
 ```json
 {
-  "plink": "bin\\plink.exe",
-  "servers": {
-    "myserver": {
-      "host": "10.0.0.1",
-      "port": 22,
-      "user": "alice",
-      "password": "your-password",
-      "hostkey": "SHA256:<把 plink 首连输出里的指纹粘这里>",
-      "drive": "M:",
-      "remote": "/home/alice",
-      "default": true
-    }
+  "file_access": {
+    "remote_root": "/home/example",
+    "local_root": "M:\\",
+    "unc_root": "\\\\sshfs.r\\example@example.invalid\\home\\example"
   }
 }
 ```
 
-**最省事的做法：让 AI 帮你配。** 注册 MCP（见[第 7 节](#7-mcp-server-使用详解)）后，
-在对话里说「帮我配一下这台服务器」，AI 会**向你索要** IP、账号、密码、映射目录、盘符，
-然后调 `configure_server` 自动写好——不用你手改JSON，也不用自己拿指纹。
+`local_root` 优先采用已验证的目录链接，其次是盘符，没有可用入口则为 `null`。验证来自 MCP 进程，宿主还需确认能访问；`unc_root` 只是候选路径。`drive_mounted` 表示盘符可读，**不保证每个文件可写**；没有配置目录链接时，`mount_ok=false` 不表示盘符失效。
 
-**手工配也行**（如果你想自己填）：
-
-**hostkey（主机密钥指纹）怎么拿**——两种方式任选：
-
-```bash
-# 方式一：命令行（Windows 10 1803+ 自带 ssh-keyscan）
-ssh-keyscan -t ed25519 -p 22 10.0.0.1 | ssh-keygen -lf -
-
-# 方式二：直接跑 plink（首次连接它会把指纹打出来然后拒绝）
-bin\plink.exe -ssh -batch -P 22 10.0.0.1 exit
-
-# 方式三：让 AI 调 MCP 工具 trust_host（见 7.4）
-```
-
-输出里 `SHA256:...` 那一串就是，原样填进 `hostkey` 字段。**没有它 plink 会拒绝连接**（这是防中间人攻击的安全设计，不是 bug）。
-
-### 4.3 挂载 + 开始用
-
-```bat
-:: 1. 挂载（net use 盘符；重启后跑 remount_all.cmd 恢复）
-setup_ssh-remote.cmd
-:: 等价于: ssh-remote setup
-
-:: 2. 进入挂载盘符，用 VS Code 打开就是服务器文件
-::    （若配了 mount 符号链接，也可以 cd /d F:\<user>）
-cd /d M:\
-code .
-
-:: 3. 任意终端敲 ssh-remote，进入远程 shell
-ssh-remote
-
-ssh-remote> nvidia-smi              :: 直接看到服务器上的 GPU（首次连接约 5.6s, 之后 ms 级）
-ssh-remote> conda activate <env>    :: 激活服务器上的环境
-ssh-remote> python train.py         :: 用服务器 CPU/GPU 跑
-ssh-remote> exit                    :: 退出（断开长连接; Ctrl+C 是中断命令, 不退出）
-```
-
----
-
-## 5. servers.json 字段详解
-
-### 顶层字段
-
-| 字段 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| `plink` | 否 | `bin\plink.exe`（包内自带时） | plink.exe 路径，相对或绝对都行。也可用环境变量 `SRB_PLINK` 覆盖 |
-| `servers` | **是** | — | 服务器集合。key 就是"服务器名"（profile），CLI 和 MCP 里都用它指代服务器 |
-
-### 每个服务器的字段
-
-| 字段 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| `host` | **是** | — | 服务器 IP 或域名 |
-| `port` | 否 | `22` | SSH 端口 |
-| `user` | **是** | — | SSH 登录用户名 |
-| `password` | 二选一 | — | SSH 密码。与 `keyFile` 二选一 |
-| `keyFile` | 否 | — | PuTTY 格式 `.ppk` 私钥路径（免密登录时用） |
-| `hostkey` | 强烈建议 | — | `SHA256:...` 主机密钥指纹，防中间人。缺它 plink 拒绝连接 |
-| `mount` | 否 | — | 本地挂载点目录，如 `F:\<user>`。**留空 = 只用盘符**（推荐，见第 8 节）。要填时 JSON 里反斜杠必须双写 |
-| `drive` | 挂载必填 | — | 盘符，如 `M:`。**每台服务器必须不同**，重复会被顶掉 |
-| `remote` | 否 | `/home/<user>` | 服务器上被映射的根目录 |
-| `tmuxSession` | 否 | `srb-ai` | 仅旧 tmux 兜底通道使用（`SRB_TRANSPORT=tmux`），长连接方案不依赖它 |
-| `default` | 否 | `false` | 是否默认服务器（省略 server 参数时用它） |
-| `note` | 否 | — | 备注信息，`ssh-remote list` 时显示 |
-
-> ⚠️ JSON 字符串里反斜杠要双写：`"F:\\<user>"` 表示 `F:\<user>`。
-> ⚠️ 一台服务器的 `drive` 盘符不能和另一台重复（会互相顶掉）。
-> `remount_all.cmd` 每次运行都会先做盘符冲突检测，重复时直接告诉你每台该改成什么。
-
-### 配置模板（占位符，请替换成你自己的值）
-
-> 下面所有 `<...>` 都是占位符。本仓库**不包含任何真实服务器信息**——
-> IP、账号、密码、主机指纹一律不进文档、不进代码、不进 git。
-> 只有你本机的 `servers.json` 里才有真实值（该文件请勿提交）。
+### 2.2 执行命令并读取增量输出
 
 ```json
 {
-  "plink": "bin\\plink.exe",
-  "servers": {
-    "myserver": {
-      "host": "<服务器IP或域名>",
-      "port": 22,
-      "user": "<你的SSH用户名>",
-      "password": "<你的SSH密码>",
-      "hostkey": "SHA256:<从plink首连输出里复制的指纹>",
-      "drive": "M:",
-      "remote": "/home/<你的SSH用户名>",
-      "tmuxSession": "srb-ai",
-      "default": true,
-      "note": "备注：用途、GPU 型号、conda 环境名等"
-    }
-  }
+  "server": "5090",
+  "command": "pytest -q",
+  "cwd": "/home/example/project",
+  "timeout": 120,
+  "max_output_chars": 2048,
+  "yield_time_ms": 1000
 }
 ```
 
-拿 `hostkey` 的方法（首次连接，plink 会拒绝并把指纹打出来）：
+以上参数交给 `exec`。命令快速完成时直接返回结果；未结束时返回 `queued` / `running`、`result_id` 和 `next_offset`，任务继续执行。
 
-```bat
-bin\plink.exe -ssh -batch -P 22 <服务器IP> exit
-```
-
-复制输出里`SHA256:...` 那一行，填进 `hostkey`。
-
-**更省事的方式：让 AI 通过 MCP 自动配。** 见下一节。
-
----
-
-## 6. ssh-remote 命令行使用详解
-
-### 6.1 注册命令（一次性，可选）
-
-```bat
-cd /d <ssh-remote-bridge 的解压目录>
-npm install -g .
-```
-
-之后任意终端直接敲 `ssh-remote`。不注册也能用：`node remote-shell.mjs <子命令>`，或直接用 `setup_ssh-remote.cmd`。
-
-### 6.2 子命令一览
-
-| 命令 | 作用 |
-|---|---|
-| `ssh-remote` | 进入交互 shell（默认服务器） |
-| `ssh-remote <服务器名>` | 进入交互 shell（指定服务器，如 `ssh-remote myserver`） |
-| `ssh-remote list` | 列出所有服务器 + 实时挂载状态（盘符挂没挂、挂载点能不能读） |
-| `ssh-remote setup [profile]` | 挂载：`net use` 盘符（持久化）+ 创建符号链接 |
-| `ssh-remote umount [profile]` | 卸载：删除盘符映射（符号链接保留） |
-| `ssh-remote exec <profile> <命令...>` | 执行单条命令后退出，适合脚本/批处理 |
-| `ssh-remote exec -f <profile> <命令...>` | 同上，但**边跑边打印**（长任务看实时输出） |
-| `ssh-remote gpu [profile]` | GPU 快照（等价 `gpustat`） |
-| `ssh-remote gpu -w [profile]` | **持续刷新** GPU 视图，Ctrl+C 停止 |
-| `ssh-remote help` | 帮助 |
-
-`ssh-remote exec` 示例（可脚本化，退出码透传）：
-
-```bat
-ssh-remote exec myserver nvidia-smi
-ssh-remote exec myserver "tail -5 ~/train.log"
-echo 退出码=%errorlevel%
-```
-
-### 6.2.1 实时输出（流式）
-
-加 `-f`（`--follow`）后，命令**边跑边打印**，不再干等：
-
-```bat
-:: 以前：跑完 8 秒，一次性吐出 4 行
-ssh-remote exec myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
-
-:: 现在：每 2 秒出一批
-ssh-remote exec -f myserver "for i in 1 2 3 4; do echo tick-$i; sleep 2; done"
-```
-
-下列命令在**交互 shell 里会自动走流式**，不用加任何参数：
-
-| 命令 | 效果 |
-|---|---|
-| `gpustat -i 2` | 每 2 秒刷新，原地重画（自动清屏，不会刷出几千行） |
-| `nvidia-smi -l 2` | 每 2 秒刷一次 GPU 状态 |
-| `tail -f xxx.log` | 跟着训练日志滚 |
-| `ping <host>` | 持续 ping |
-| `watch <cmd>` | 持续刷新 |
-
-想看 GPU 就用 `gpu -w`（等价于上面的 `gpustat -i 2`，已带清屏）：
-
-```bat
-ssh-remote gpu-w
-```
-
-**注意**：`htop` / `top` / `vim` / `nvitop` 这类**全屏 TUI 程序在快通道上跑不了**——
-长连接没有 PTY（伪终端），它们需要真终端才能画界面。直接输 `htop` 会得到提示：
-
-```
-[ssh-remote] "htop" needs a real terminal (PTY); the fast channel has none.
-[ssh-remote] run: raw htop
-```
-
-`raw htop` 现在就能用（走 `plink -t` 分配真 PTY），代价是每次要重走一次 SSH 握手（约 5 秒）。
-
-### 6.3 交互 shell 内怎么用
-
-```
-> ssh-remote
-------------------------------------------------------------
-ssh-remote - remote forwarding shell
- server: myserver youruser@<服务器IP>  channel: persistent SSH (ms-level)
- remote cwd: /home/<user>
- exit/Ctrl+D to leave - Ctrl+C interrupts the running command - raw <cmd> full-screen - help for help
-------------------------------------------------------------
-ssh-remote> _
-```
-
-| 输入 | 行为 |
-|---|---|
-| `nvidia-smi` | 原样送到服务器执行，输出 + 退出码回传（ms 级） |
-| `gpustat -i 2` | **自动流式**：每 2 秒刷新并原地重画 |
-| `tail -f x.log` / `ping <host>` | **自动流式**：跟着滚 |
-| `gpu` / `gpu -w` | GPU 快照 / 持续刷新 |
-| `htop`（任何要 TTY 的程序） | 提示改用 `raw htop`（见 §6.2.1） |
-| **Tab** | 补全：命令名、内建命令、远端路径（见 §6.2.2） |
-| `exit` / `quit` / Ctrl+D | 退出本地 shell（断开长连接） |
-| Ctrl+C | **中断正在运行的远程命令**（杀远端进程组）；不退出，空闲时清空输入行 |
-| `raw vim x.txt` 或 `! vim x.txt` | 全屏直连模式（plink -t），适用于 vim / htop / top / watch |
-| `help` 或 `?`  | 显示帮助 |
-| 其它任何命令 | 同上，送服务器执行（`cd`/`export` 跨命令保持） |
-
-**cwd 自动映射**：在挂载目录里启动 `ssh-remote`，远端会自动 `cd` 到对应路径——本地和远程始终一致。
-
-### 6.2.2 Tab 补全
-
-交互 shell 里按 **Tab** 即可补全，三层由快到慢：
-
-| 层 | 补什么 | 延迟 |
-|---|---|---|
-| L1 | 本地内建：`exit` `help` `gpu` `raw` `list` … | 0（本地） |
-| L2 | 远端命令名：`gpustat` `htop` `nvidia-smi` … | 首次 ~50ms，之后走缓存 |
-| L3 | 远端路径：`cd /home/wa<TAB>` → `cd /home/<user>/` | ~18ms，之后走缓存 |
-
-```
-ssh-remote> gpust<TAB>              -> gpustat
-ssh-remote> cd /home/wa<TAB>        -> cd /home/<user>/
-ssh-remote> cat /etc/host<TAB>      -> 列出 hosts / hostname / host.conf ...
-ssh-remote> cd AD<TAB>              -> cd ADMN/
-```
-
-目录候选自动带尾斜杠，可以直接接着敲下一层；文件候选不带。多个候选时按两次 Tab 会列出全部。
-
-**参数补全（`git checkout <TAB>` 列出分支名）没做**——服务器上没有 bash-completion，
-拿不到可靠信息，硬做只会给出错误候选。
-
-**任务运行期间按 Tab 不响应**，这是有意的：此刻发查询只会干等，还可能干扰正在跑的任务。
-`cd` 之后目录缓存会自动失效，下次补全拿的是新目录。
-
-补全查询走独立的只读通道，**不会污染 `cd`/`export` 状态**，也不会打断正在运行的任务。
-
-**长任务正确姿势**（需要看着进度就用 `nohup ... &`，断线也不杀）：
-
-```bash
-ssh-remote> nohup python train.py > train.log 2>&1 &
-ssh-remote> tail -f train.log      # Ctrl+C 中断 tail, 训练继续
-```
-
-首次连接约 5.6 秒（服务器侧握手成本），之后每条命令 4-35ms。会话内 `cd` / `export` 一直有效；
-新开一个 `ssh-remote` 会回到远程家目录。
-
----
-
-## 7. MCP Server 使用详解
-
-### 7.1 MCP 是什么，能干什么
-
-MCP（Model Context Protocol）是 AI 连接外部工具的标准协议。注册本 MCP server 后，**AI 大模型可以直接操作你的服务器**——不用你复制粘贴日志，AI 自己会执行命令、读文件、改配置、查挂载状态。
-
-典型对话：
-
-```
-你：看一下 myserver 上训练跑到多少了
-AI：[调 exec] tail -5 ~/train.log  →  "epoch 42, loss 0.31..."
-
-你：把 learning_rate 改成 1e-4
-AI：[调 read_file 读 config.yaml] → [调 write_file 改回去] → 完成
-```
-
-### 7.2 AI 首次接入：必须先向用户索要信息（**硬性规则**）
-
-> **这一节是给 AI 看的第一条规则，优先级高于任何其他说明。**
-
-ssh-remote-bridge 的包里**不含、也不应含任何真实服务器信息**。仓库里所有 IP、账号、密码、
-主机指纹都是占位符。因此：
-
-**当 AI 第一次接入（本会话中还没成功执行过任何服务器命令）时，禁止猜测、推断、
-复用任何凭据 —— 必须先向用户索要以下信息：**
-
-| # | 索要什么 | 说明 | 必填 |
-|---|---|---|---|
-| 1 | **服务器 IP 或域名** | `host` | ✅ |
-| 2 | **SSH 端口** | 一般是 `22`，不确定就问 | 建议问 |
-| 3 | **SSH 登录用户名** | `user` | ✅ |
-| 4 | **密码**（或私钥文件绝对路径） | `password` / `keyFile`，二选一 | ✅ |
-| 5 | **用哪个盘符做映射** | `drive`，如 `M:`（挂文件时才需要，**必须确认未被其他服务器占用**） | 建议问 |
-| 6 | **要不要额外挂个普通文件夹路径** | `mount`，如 `F:\myserver`。**默认不要**（留空即只用盘符，无需开发者模式） | 建议问 |
-| 7 | **服务器上映射哪个目录** | `remote`，默认 `/home/<用户名>` | 可默认 |
-| 8 | **这台服务器起个什么名字** | `name`，省略则叫 `myserver` |可选 |
-
-**正确流程（AI 侧）：**
-
-1. 先调 `list_servers` 看有没有已配置的服务器。
-2. 若返回「未配置 / 不可用」→ **停下来向用户问上面 8 项**，一次性问清，别挤牙膏。
-3. 拿到答案后调 `configure_server`，**原样传入用户给的值**。
-   `hostkey` 通常不用问：`configure_server` 会自动抓（plink 首次接触时会打出指纹）；
-   抓不到时它会报错，那时再向用户索要 `SHA256:...` 指纹。
-4. 落盘后即可直接用 `exec` / `read_file` / `write_file`。需要文件映射再调 `mount_server`。
-
-**凭据纪律（不可违反）：**
-
-- ❌ 不要把密码/主机指纹/内网 IP 写进任何代码、脚本、文档、注释、笔记、聊天记录。
-- ❌ 不要把密码写进命令行参数（会进 shell 历史和进程列表）——用 `configure_server`。
-- ❌ 不要凭记忆或从其它文件"推断"凭据，即使看起来像。
-- ✅ 真实凭据**只允许**存在于本机 `servers.json`（此文件请勿提交到 git）。
-- ✅ 密码不会出现在任何工具的返回值里（`configure_server` 返回 `***(stored in servers.json)***`）。
-
-**盘符（第 5 项）必须确认没被别的服务器占用** —— 可先 `list_servers` 看各占什么，
-给用户推荐一个空闲的。盘符重复会让「A 服务器的文件夹内容变成 B 服务器的」，极难排查。
-
-**`mount`（第 6 项）默认建议用户不要填** —— 只用盘符就不需要开发者模式和管理员权限，
-少一个失效点。等用户明确说「我想要 `F:\xxx` 这种固定路径」再补。
-
-### 7.3 注册步骤（WorkBuddy / Codex，两个都装就都可用）
-
-ssh-remote-bridge 是标准 MCP server，WorkBuddy 和 Codex 都能用。两个客户端配置格式不同，各有一个注册脚本。
-
-#### A. 注册到 WorkBuddy
-
-双击 **`register_mcp.cmd`**（自动合并进 `mcp.json`，保留已有条目），或手动编辑
-`C:\Users\<你的用户名>\.workbuddy\mcp.json`（注意：**没有点前缀**，不是 `.mcp.json`）：
+后续调用 **`read_result`**，从上次返回的 `next_offset` 继续读取：
 
 ```json
 {
-  "mcpServers": {
-    "ssh-remote-bridge": {
-      "command": "<node.exe 的完整路径，如 D:\\Program Files\\nodejs\\node.exe>",
-      "args": [
-        "<ssh-remote-bridge 目录>\\mcp\\server.mjs"
-      ]
-    }
-  }
+  "result_id": "上次返回的任务ID",
+  "offset": 0,
+  "max_bytes": 8192,
+  "wait_ms": 10000
 }
 ```
 
-| 配置项 | 说明 |
+这里的 `offset=0` 仅表示从头读取；若 `exec` 已返回部分内容，应使用其 `next_offset`，避免重复内容。继续读取直到任务完成；完成后若仍显示 `MORE`，可按需要继续取剩余片段。**不要为了获取输出重新执行原命令，也不要空轮询或无目的读完整份日志**。
+
+| 参数 | 默认值与范围 |
 |---|---|
-| `command` | node.exe 完整路径（用系统 Node，不用 npx——本机实测 npx 会挂死） |
-| `args` | MCP server 入口脚本的**绝对路径** |
-| 多服务器共存 | `mcpServers` 是个对象，已有的条目（如 rea）保持不动，追加 `ssh-remote-bridge` 即可 |
+| `exec.cwd` | profile 的远端根目录；项目命令应显式指定 Linux 绝对路径 |
+| `exec.timeout` | 120 秒，1–3600 秒；排队和握手后计时，超时中断任务 |
+| `exec.yield_time_ms` | 1000 毫秒，整数 0–30000；只控制本次调用等待多久 |
+| `exec.max_output_chars` | 8192 个 Unicode 字符，整数 1–2097152；需要更多时显式提高 |
+| `read_result.offset` | 0；字节偏移，后续使用返回的 `next_offset` |
+| `read_result.max_bytes` | 8192，整数 1–65536 |
+| `read_result.wait_ms` | 10000 毫秒，整数 0–30000；遇到新输出或完成就返回 |
 
-**保存后必须做最后一步**：打开**连接器管理页 → 右上角「自定义连接器 / 信任」入口 → 找到 ssh-remote-bridge → 点「信任」**。不点信任，MCP 不会生效。
+执行与输出规则：
 
-#### B. 注册到 Codex
+- MCP 每个命令的目录和环境独立，前一次 `cd` / `export` 不会传给下一次；在同一条命令内初始化 conda 等环境。同一 profile 的执行任务会排队，运行中仍可读取其输出。
+- 完成后检查真实退出码、`FAILED`、`TIMED-OUT`、`CANCELLED` 等状态。取消用 `cancel_exec({"result_id":"任务ID"})`，然后读取最终状态；取消不回滚已经发生的修改，取消一次读取也不会取消原任务。
+- 完成结果保留 10 分钟；容量为每 profile 16 个、进程总计 32 个，活动任务不被淘汰。断线、重载或完成结果被淘汰后，旧输出可能不可再读。
+- 已完成的 `exec` 回复超限时保留开头和结尾；运行中使用 `next_offset` 继续读取。`RESPONSE-LIMIT` 是回复精简，`REMOTE-CAPTURE-LIMIT` 是独立的 **2 MiB 远端捕获上限**。提高回复限额不能恢复未捕获内容；长日志应保存到服务器文件并查询片段。
+- 程序必须刷新输出才能实时读取，Python 可使用 `-u` 或 `flush=True`。宿主支持进度通知时可能额外展示日志，Agent 获取运行中内容使用 `read_result`，不依赖通知进入模型上下文。
 
-Codex 用 `~/.codex/config.toml`（**TOML，不是 JSON**），配置键叫 `mcp_servers`。
+### 连接与任务的生命周期
 
-双击 **`register_mcp_codex.cmd`**，它优先调官方 CLI：
+- 同一 profile 复用一条命令连接，避免重复 SSH 握手。普通命令通道空闲 10 分钟后断开，下次按需重连；CLI 交互终端保留连接直到退出。SSHFS 挂载是独立的常驻连接，不受命令通道断开影响。
+- 远端控制器使用 Python 标准库事件循环，无输出时阻塞等待。任务超时由宿主和远端分别执行；取消向整组进程发送 TERM，2 秒后仍未退出则 KILL。
+- 命令完成后清理同进程组内的后台子进程，不等待继承输出管道的后台程序自然退出。需要主动脱离会话的任务，使用任务管理器，或 `setsid nohup <命令> > /绝对路径/task.log 2>&1 < /dev/null &`，并自行管理其生命周期。
+- MCP stdin 关闭或正常收到退出信号时，停止接收任务、取消排队工作、等待清理并关闭 SSH；关闭前排队的命令不会重新建连执行。直接强杀宿主无法保证它有机会清理，远端超时仍提供独立的终止路径。
+- 挂载获取主机公钥时复用已有命令连接；如果只为此次挂载临时建立连接，读取完成后立即关闭。`list_servers` / `server_status` 不建立 SSH 连接，多个 profile 的本机状态探测最多同时运行两个。
+- 需要跨断线、宿主重载继续运行的长任务，应使用服务器上的任务管理方式并记录 PID、日志位置。普通 MCP 命令不是持久作业管理器，不会自动重放。
 
-```bat
-codex mcp add ssh-remote-bridge -- "<ssh-remote-bridge 目录>\runtime\node.exe" "<ssh-remote-bridge 目录>\mcp\server.mjs"
-```
+### 2.3 十一个工具速查
 
-`codex` 不在 PATH 上时脚本自动退回直接改 `config.toml`。也可以手动在文件末尾追加：
-
-```toml
-[mcp_servers.ssh-remote-bridge]
-command = '<ssh-remote-bridge 目录>\runtime\node.exe'
-args = ['<ssh-remote-bridge 目录>\mcp\server.mjs']
-startup_timeout_sec = 120
-```
-
-> ⚠️ TOML 的**单引号是字面量、不做转义**，所以 Windows 反斜杠可以直接写。
-> 千万别用双引号 —— 那样 `\r`、`\n` 会被当成转义符，路径直接坏掉。
-
-```bat
-codex mcp list                查看已注册的 MCP（确认 ssh-remote-bridge 在列表里）
-codex mcp get ssh-remote-bridge看单项详情
-codex mcp remove ssh-remote-bridge    卸载
-```
-
-#### 两边对比
-
-| | WorkBuddy | Codex |
-|---|---|---|
-| 配置文件 | `~\.workbuddy\mcp.json`（JSON） | `~\.codex\config.toml`（TOML） |
-| 注册键 | `mcpServers` | `mcp_servers` |
-| 注册脚本 | `register_mcp.cmd` | `register_mcp_codex.cmd` |
-| 生效方式 | 连接器页点「信任」 | **重启 Codex** |
-| 验证 | 连接器页能看到 ssh-remote-bridge | `codex mcp list` |
-
-> 想换配置位置：server.mjs 支持环境变量 `SRB_CONFIG` 指向另一个 servers.json；想换 plink 路径用 `SRB_PLINK`。
-> `register_mcp_codex.mjs` 还支持 `SRB_CODEX_CONFIG_DIR` 直接指定 config.toml 所在目录（测试隔离 / 多套 Codex 配置用）。
-
-### 7.4 九个工具
-
-参数细节直接看 MCP 工具自身的 schema（客户端里能看到），这里只列用途和关键点。
-
-| 工具 | 关键参数 | 说明 |
-|---|---|---|
-| `list_servers` | — | 列出所有服务器 + **实时挂载状态**（`drive_mounted`/`mount_ok`）。不含密码。**AI 每次操作前应先调它确认服务器名** |
-| `configure_server` | `name` `host` `user` `port` `hostkey` `drive` `mount` `remote` `note` + (`password` 或 `keyFile`) | 写入/更新服务器。**合并语义**：没传的字段保持原值。`hostkey` 省略则自动抓取。密码永不回显 |
-| `exec` | `command` `server` `timeout=120` | 执行命令，返回 `exit=` `duration=` + 输出。**最常用** |
-| `read_file` | `path` `server` `max_bytes=65536` | 读文件。文本直返，二进制返 base64，超限截断并标注 |
-| `write_file` | `path` `content` `append` `server` | 写文件。大文件自动分片（绕开 pty 单行 4096 字节限制） |
-| `mount_server` | `server` | 挂载：建盘符映射（+ 可选符号链接）。需已装 WinFsp+SSHFS-Win |
-| `unmount_server` | `server` | 卸载：删除盘符映射，符号链接保留 |
-| `server_status` | `server` | 体检：挂载状态、通道健康度。**出问题先调它** |
-| `trust_host` | `host` `port=22` | 取 `SHA256:...` 主机指纹。添加新服务器时用 |
-
-几个容易踩的点：
-
-- **`exec` 不要跑交互式全屏程序**（vim/htop/top）——用本机 `ssh-remote` 的 `raw` 模式。
-- **`configure_server` 只接受用户刚刚明确告诉你的值**，绝不从别处"推断"凭据（见 §7.2）。
-- **`hostkey` 抓不到是正常的**：首次接触服务器时 plink 本来就会拒绝并打印指纹，那就是你要的指纹。
-- **`list_servers` 返回「未配置」时必须停下来问用户**，别继续往下调。
-
-### 7.5 注册后的验证
-
-在 AI 对话里说：「调 list_servers 看看有哪些服务器」——能返回服务器信息（含 `drive_mounted: true`）就说明整条链路通了。
-
----
-
-## 8. 挂载机制详解（为什么这么设计）
-
-### 两种模式，先选一种
-
-| | **只用盘符（推荐）** | 盘符 + 符号链接 |
-|---|---|---|
-| 配置 | 只填 `drive`，**`mount` 留空** | `drive` 和 `mount` 都填 |
-| 访问路径 | `M:\` | `M:\` **和** `F:\<user>\` |
-| 权限要求 | **无**（`net use` 任何人都会） | 需要开发者模式或管理员（`mklink /D`） |
-| VS Code / 资源管理器 | 直接输 `M:` 可以 | 两种都行 |
-| 目录名带服务器名 | 靠盘符区分 | 目录名可以自定义 |
-
-**建议：先只用盘符。** 少一层符号链接就少一个失效点、少一个权限坑。等你确实需要 `F:\myserver` 这种固定路径（某些工具只认普通文件夹）时，再补 `mount`。
-
-### 完整链路
-
-```
-[只用盘符]  M:  ──net use──▶  SSHFS-Win  ──SSH──▶  服务器 /home/<user>
-
-[带符号链接] F:\<user>  ──mklink /D──▶  M:  ──net use──▶  SSHFS-Win  ──SSH──▶  服务器
-             (普通文件夹路径)          (盘符)             (用户态文件系统)        (真实文件)
-```
-
-### 三个关键设计决策
-
-**① 为什么挂的是盘符而不是目录？**
-SSHFS-Win 的 `net use` 只支持盘符，不支持目录挂载（直接挂目录会报错误 87/67）。所以底层永远是盘符，
-要不要再包一层符号链接变成普通文件夹路径，是你的选择（见上面对比表）。
-
-**② 为什么密码要内联在 net use 命令行？**
-实测：用 `cmdkey /add` 存的 Windows 凭据，SSHFS-Win **不读**（报"密码无效"）。唯一可靠方式是密码直接
-出现在命令行：`net use M: \\sshfs.r\user@host\path <密码> /user:user /persistent:yes`。
-`ssh-remote setup` 已自动处理。
-
-**③ UNC 路径前缀**
-- `\\sshfs.r\...` = **r**ooted，后面跟绝对路径（`\home\<user>`），本系统用这个
-- `\\sshfs.kr\...` = 免密（key）模式
-- `\\sshfs.r\user@host!port\...` = 非 22 端口时主机名后加 `!端口`
-
-### 每台服务器必须用不同盘符
-
-**同一个盘符同一时刻只能连一台机器。**两台都配 `M:` 时，后挂的会把先挂的踢掉，
-症状是「刚才还在看 A 服务器，`M:\` 里突然变成了 B 服务器的文件」——
-看起来像文件被改了，其实是映射被顶掉了，属最难自查的一类故障。
-
-两道防线：
-1. **加服务器时**就给它一个空闲盘符（`M:` 用了就 `N:`、`O:`）
-2. **`remount_all.cmd` 每次运行前自动检测**，发现重复会列出冲突并建议每台改成什么：
-
-```
-!!! 盘符冲突：多台服务器配了同一个盘符 !!!
-  M:  ←  5090  和  box-b  和  box-c
-  修法: 编辑 servers.json, 给每台一个不同的盘符, 例如
-         5090: drive "M:"  ->  保持不变（第一台优先）
-         box-b: drive "M:"  ->  改成  "N:"
-         box-c: drive "M:"  ->  改成  "O:"
-```
-
-### 符号链接的权限要求（仅 `mount` 模式需要）
-
-`mount` 留空时**完全用不到**。只有填了 `mount` 才需要以下任一条件（满足一次，永久有效）：
-Windows 10 17003+ **设置 → 系统 → 可选功能 → 开发者模式 → 开**，或以管理员身份运行终端。
-
-> 部分沙箱/远程工具里 mklink 会被"实体化"成空目录——这是环境限制不是 bug。
-> **挂载必须在本机真实终端执行**（双击 setup_ssh-remote.cmd）。
-
-### 挂载的生命周期
-
-| 操作 | 效果 |
+| 工具 | 用途与主要参数 |
 |---|---|
-| `ssh-remote setup` | 建映射。`/persistent:yes` 只在登录时**尝试**重连，网络未就绪就静默失败 |
-| **重启电脑** | 盘符映射大概率丢失 → **跑一次 `remount_all.cmd`**（幂等，可重复；已挂好的自动跳过） |
-| `ssh-remote umount` | 只删盘符映射；符号链接保留（若有），再 setup 自动重建 |
-| 符号链接指向失效盘符 | 显示为空文件夹，`ssh-remote setup` 即可恢复 |
+| `list_servers` | 无参数；发现已保存 profile、挂载状态和 `file_access`，不回显密码 |
+| `server_status` | `server` 可选；刷新指定服务器的映射归属、可读性和命令通道状态 |
+| `configure_server` | 新建或合并 profile；已有配置只传需改变的字段，未传字段保持原值 |
+| `trust_host` | `host`、`port=22`；获取主机指纹，供配置与核对 |
+| `mount_server` | 必填 `server`；挂载已配置盘符，成功后刷新该 profile 的映射信息 |
+| `unmount_server` | 必填 `server`；卸载映射，保留目录链接和服务器文件 |
+| `exec` | 必填 `command`；远端任务，支持 `server`、`cwd`、超时、输出预算、提前返回 |
+| `read_result` | 必填 `result_id`；运行中或完成后的字节分页读取，支持等待新输出 |
+| `cancel_exec` | 必填 `result_id`；取消活动或排队任务，再读结果确认最终状态 |
+| `read_file` | 必填 Linux `path`；SSH 后备读取，支持 `server`、`offset`、`max_bytes`、`format` |
+| `write_file` | 必填 Linux `path`、UTF-8 `content`；支持 `server`、`append=false`，SSH 后备写入 |
 
-### 备用方案：rclone
+SSH 文件后备接口说明：
 
-SSHFS-Win 出问题时可改用 rclone（sftp 协议）：`ssh-remote rclone [profile]`，
-或 `mount_ssh-remote-rclone.cmd`。两条路线二选一，**不要同时挂**。
+- `read_file` 默认 8192 字节，`max_bytes` 为 1–1048576；`read_result` 的单页上限为 65536 字节。两者 `format` 均支持 `auto` / `text` / `base64`，默认 `auto`；二进制默认省略正文，需要原始字节时显式请求 `base64`。文本分页避免拆开 UTF-8 字符。
+- `write_file` 内容上限 1 MiB，父目录需已存在；覆盖写入先暂存再替换，拒绝替换软链接；追加不是原子操作。不要把它当作默认项目编辑工具。
 
----
+## 3. 本机挂载与会话外恢复
 
-## 9. 可插拔：如何添加新服务器
+恢复入口放在本机项目目录，不需要先打开远端项目或建立 MCP 会话。当前 profile `5090` 使用 `M:`；操作其他服务器时替换 profile 名。
 
-**核心原则：加服务器永远只改 `servers.json`，代码一行不动。**
+**Agent 执行时，将宿主命令工具的 `workdir` 显式设置为本机项目目录。** 失效的 `M:\` 或 `\\sshfs.r\…` 工作目录可能导致命令根本无法启动；仅在命令内部写 `Set-Location` 无法补救启动失败。
 
-### 最简单的路径：让 AI 配
+以下为 PowerShell 示例，每项按需单独执行。本机要求使用 `rtk proxy`；其他环境未安装 RTK 时可去掉前缀。
 
-注册好 MCP 后（§7.3），对 AI 说「帮我配一下这台服务器」。它会问你 IP、账号、密码、盘符，
-然后调 `configure_server` 写好配置并自动取主机指纹。**你不需要手改 JSON。**
+```powershell
+Set-Location -LiteralPath 'C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd'
 
-### 手工配置
+# 查看状态
+rtk proxy .\runtime\node.exe .\remote-shell.mjs list
 
-在 `servers` 对象里加一个条目即可：
+# 挂载 / 恢复 5090
+rtk proxy .\runtime\node.exe .\remote-shell.mjs setup 5090
+
+# 恢复全部配置了盘符的服务器；健康挂载会复用
+rtk proxy .\runtime\node.exe .\tools\restore_all.mjs
+
+# 只诊断，不恢复
+rtk proxy .\runtime\node.exe .\tools\restore_all.mjs --check
+
+# 用户要求卸载时执行
+rtk proxy .\runtime\node.exe .\remote-shell.mjs umount 5090
+```
+
+用户也可直接运行本机脚本，下面路径均相对于本手册顶部的项目目录：
+
+| 脚本位置 | 操作 |
+|---|---|
+| [remount_all.cmd](remount_all.cmd) | 恢复全部服务器挂载 |
+| [setup_ssh-remote.cmd](setup_ssh-remote.cmd) | 挂载默认服务器；命令行可加 profile |
+| [umount_ssh-remote.cmd](umount_ssh-remote.cmd) | 卸载默认服务器；命令行可加 profile |
+| [cleanup_stale_mounts.cmd](cleanup_stale_mounts.cmd) | 双击直接清理离线重复挂载并保留结果窗口；`--check` 仅预览，可指定 `Y: Z:` |
+| [open-ssh-remote-terminal.cmd](open-ssh-remote-terminal.cmd) | 打开远端交互终端 |
+
+Agent 自动执行优先调用 Node 入口，避免 `.cmd` 在失败时等待 `pause`。上述命令在 Windows 本机运行，不能发送到 Linux `exec`。
+
+Node 挂载命令完成后会退出，SSHFS 在后台继续运行，无需保留终端窗口。
+
+**清理离线重复挂载**（独立执行，不会自动在挂载前后运行）：
+
+```powershell
+# 仅列出状态和候选项
+rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs --check
+# 默认清理全部符合规则的离线副本；双击 cleanup_stale_mounts.cmd 也是此模式
+rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs
+# 仅清理指定盘符；--apply 可保留，也可省略
+rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs --apply Y: Z:
+```
+
+按账号、主机和端口判断同一服务器，不区分远端目录：存在在线挂载时保留在线的、清理离线副本；全部离线时优先保留配置中的盘符，否则保留字母排序最前的一个。同服务器不同目录的离线副本也可能被清理；需要保留时勿对其执行清理。仅处理当前配置或本项目历史挂载记录能识别的 SSHFS 服务器；超时、权限不足或归属不明时跳过。每次清理前重新核对状态，沿用挂载锁和进程身份检查；只解除映射，不删除远端文件。
+
+对于系统映射已消失、资源管理器左侧仍显示红叉的残留盘符，清理模式会发送 Windows 驱动器移除事件（`WM_DEVICECHANGE / DBT_DEVICEREMOVECOMPLETE`）使资源管理器更新驱动器缓存，再发送 Shell 移除通知；仅发 Shell 通知可能在按 F5 后重新出现。只通知已确认不存在、未被当前配置或系统网络映射占用的盘符；指定 `Y: Z:` 时仅处理指定范围，`--check` 不刷新。每次运行的结果保存在本机 `logs/cleanup_stale_mounts.log`（相对于 `servers.json` 所在目录）；双击后的窗口保留结果，再按任意键退出。
+
+卸载或更换运行库前保存文件、暂停其他 Agent 写入；已有文件句柄会失效。只处理确认归属的映射，不覆盖其他盘符，不杀无关进程，不自动提权，不无限重试。无法释放的卷按错误处理，必要时重启 Windows 后从本机恢复。
+
+新会话可引用：**“读取 `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd\README.md`，按挂载恢复章节恢复 5090。”** 若远端项目会话打不开，从本机目录或无项目会话执行。
+
+## 4. ssh-remote 命令行
+
+已注册全局命令时使用 `ssh-remote`；也可从项目目录调用 `runtime\node.exe remote-shell.mjs ...`。CLI 检测到项目内 Node 时会使用它重新执行。
+
+| 命令 | 功能 |
+|---|---|
+| `ssh-remote [profile]` | 打开原生 Linux PTY；省略 profile 使用默认服务器 |
+| `ssh-remote list` | 查看所有 profile 和挂载状态 |
+| `ssh-remote setup [profile]` | 挂载盘符及可选目录链接 |
+| `ssh-remote umount [profile]` | 卸载；也支持 `unmount` 别名 |
+| `ssh-remote exec <profile> <command...>` | 执行一条远端命令并返回结果 |
+| `ssh-remote exec -f <profile> <command...>` | 持续显示命令输出；`--follow` 同义，位于 profile 前 |
+| `ssh-remote gpu [profile]` | GPU 状态快照；加 `-w` 持续查看 |
+| `ssh-remote rclone [profile]` | 用户主动选择的备用 SFTP 挂载方式 |
+| `ssh-remote [profile] --framed` | 旧逐行兼容模式；管道输入也使用此模式 |
+| `ssh-remote help` | 查看帮助 |
+
+原生终端中，Tab 补全、方向键、Ctrl+C、颜色和窗口尺寸由远端 Bash/PTY 处理；支持服务器已加载的 bash-completion。可直接运行 `htop`、`nvitop`、`gpustat -i 1`；退出使用 `exit` / Ctrl+D。终端会话保留目录和环境，挂载内启动目录会映射到对应远端位置。
+
+管理子命令在 Windows 外层运行；原生终端里的 `help` 是 Bash 帮助。`raw` / `!` 等旧快捷方式属于 `--framed` 模式。MCP `exec` 是文本任务接口，全屏 TUI 应在 CLI 中运行。
+
+PowerShell 执行远端命令时可用单引号保护远端的 `$` 等字符，例如：
+
+```powershell
+ssh-remote exec 5090 'cd /home/example/project && pytest -q'
+ssh-remote exec -f 5090 'python -u /home/example/project/train.py'
+```
+
+rclone 挂载要求项目内 `rclone/rclone.exe`，公钥文件取 `SRB_KNOWN_HOSTS` 指定路径或项目内 `known_hosts`；使用前核对其中的服务器公钥。它在前台运行，需保持窗口开启；关闭或 Ctrl+C 结束。桥接器不会自动切换挂载后端。
+
+## 5. 安装、注册与服务器配置
+
+### 5.1 本机依赖与安装
+
+当前机器已配置，无需重新安装。新环境需要：
+
+- **Node.js 与 npm**：包声明最低 Node 18，建议使用受支持的正式版；当前独立环境版本见第 6 节。
+- **Plink**：持久命令通道使用，建议放在 `bin/plink.exe`。
+- **WinFsp + SSHFS 运行库**：挂载时需要。原生终端还使用 npm 依赖 `ssh2`。
+- **Cygwin 控制台辅助组件**：SSHFS 挂载运行库的必需组件，位置为 `runtime/sshfs/bin/cygwin-console-helper.exe`。由下方安装器从锁定的官方 Cygwin 包自动安装并检查，无需单独编译；缺少它可能导致后台挂载弹出常驻空白终端。部署或复制运行库时必须一并保留。
+- **7-Zip**：仅运行库安装解包时需要。rclone 是可选的备用挂载工具。
+
+服务器需提供 Linux、Bash、**`/usr/bin/python3` ≥ 3.9**（仅标准库，无需 pip）、以及常用 GNU coreutils（如 `base64`、`stat`、`dd`）。`setsid` 用于主动脱离命令会话的任务；`htop`、`nvitop`、`gpustat` 等交互程序需要在服务器上另行安装。Python 缺失或版本不满足时，命令通道会直接报错，不自动更换传输或重放命令；本机无需安装 Python。
+
+在本机项目目录安装 npm 依赖：`npm ci`。注册全局 CLI 可执行 `npm install -g .`，也可始终使用 Node 直接调用入口。执行 npm 时遵循宿主命令规则。
+
+安装独立挂载运行库：
+
+```powershell
+rtk proxy node .\tools\install_sshfs_runtime.mjs
+```
+
+安装器下载已锁定的官方 Cygwin 二进制包，检查大小和 SHA-512，并检查后台启动必需的 `cygwin-console-helper.exe`；不编译程序，不覆盖已有运行库、不触碰当前挂载。优先使用 `runtime/7zip/7z.exe`，否则使用系统 7-Zip。来源、版本和文件 SHA-256 保存于 `runtime/sshfs/provenance.json`。
+
+升级时加 `--stage` 准备 `runtime/sshfs-next/`；验证后保存文件、卸载受影响映射，将旧 `sshfs/` 移至备份，再把 `sshfs-next/` 更名为 `sshfs/` 并重新挂载。运行库不能热更新。新启动的 SSHFS 必须 >=3.7.2；选择顺序为 `SRB_SSHFS` 显式路径 → 项目独立运行库 → 系统 SSHFS-Win。
+
+**首次克隆 / Agent 安装要求：** 基础运行库安装器只准备构建所需依赖，安装完成不代表可直接挂载。首次部署必须继续按 [SSHFS 构建与修复手册](BUILD-SSHFS.md) 构建、验证并启用 3.7.2+srb.1；确认实际选中的 SSHFS 为修复版后再挂载。不要把已知存在句柄泄漏的官方 3.7.2 原版作为最终安装结果。SRB_SSHFS 或系统安装可能覆盖版本选择，必须检查实际使用的程序。若工具链缺失或构建失败，应报告阻塞，不能静默退回原版。Git 克隆和基础安装脚本都不会自动完成修复版构建。
+
+**句柄泄漏修复版：** `3.7.2+srb.1` 已于 2026-10-28 切换至 `runtime/sshfs/`，M: 已重新挂载生效；连续读取 300 次，句柄保持 304。该版本来自用户授权的源码构建；基础运行库安装器仍提供官方原版，不能替代这一步。构建环境、复现结果、源码补丁和切换步骤见 [SSHFS 构建与修复手册](BUILD-SSHFS.md)。
+
+### 5.2 注册 MCP
+
+| 客户端 | 本机注册入口 | 配置与生效 |
+|---|---|---|
+| Codex | [register_mcp_codex.cmd](register_mcp_codex.cmd) 或 `node tools/register_mcp_codex.mjs` | 用户目录 `.codex/config.toml`；重载 MCP 或重启宿主 |
+| WorkBuddy | [register_mcp.cmd](register_mcp.cmd) 或 `node tools/register_mcp.mjs` | 用户目录 `.workbuddy/mcp.json`；在客户端信任/启用该连接器并重新连接 |
+
+注册脚本优先选择项目 `runtime/node.exe`，保留其他 MCP 条目及已有 env/选项。通用 STDIO 启动配置为：
 
 ```json
-"dgx": {
-  "host": "10.0.0.2",
-  "port": 22,
-  "user": "bob",
-  "password": "<密码>",
-  "hostkey": "SHA256:<见下方获取方式>",
-  "drive": "N:",
-  "remote": "/home/bob",
-  "note": "DGX station"
+{
+  "command": "<本机项目目录>\\runtime\\node.exe",
+  "args": ["<本机项目目录>\\mcp\\server.mjs"]
 }
 ```
 
-**拿 hostkey**（AI 侧调 `trust_host`，或本机终端）：
-```bat
-ssh-keyscan -t ed25519 -p 22 10.0.0.2 | ssh-keygen -lf -
-```
+此 JSON 表示启动参数，实际配置文件格式由客户端决定；Codex 的表名为 `[mcp_servers.ssh-remote-bridge]`，键为 `command`、`args`，可配置 `startup_timeout_sec=120`。路径使用绝对路径。注册后调用一次 `list_servers` 确认连接，不需要为了验证而新建 profile。
 
-**验证**：
-```bat
-ssh-remote setup dgx     :: 挂载
-ssh-remote list          :: 确认状态 ok
-ssh-remote dgx           :: 进新服务器的 shell，敲 hostname 验证
-```
+### 5.3 配置服务器
 
-之后对 AI 说「在 dgx 上跑一下 nvidia-smi」即可，它会调 `exec` 并传 `server="dgx"`。
-**零代码改动，零重启。**
+本机配置保存在 `servers.json`；首次部署可参考 [servers.example.json](servers.example.json)。已有配置不要用模板覆盖。多个服务器共用一个 MCP，各使用自己的 profile 名和不同盘符。
 
-四个容易踩的点：
+优先使用 `configure_server`：新 profile 提供 `name`、`host`、`user`、`password` 或 `keyFile`；按需指定 `drive`、`remote`、`port`。未提供主机指纹时会尝试获取；首次信任应核对目标和指纹。更新已有 profile 只传要变更的字段。
 
-- **盘符必须一台一个**：`myserver` 占了 `M:`，新服务器就用 `N:`、`O:`。重复会互相顶掉，
-  症状是 `M:\` 里的文件"变成"另一台服务器（见 §8）。`remount_all.cmd` 会当场检测并提示。
-- **`mount` 默认不填**：只用盘符即可。需要 `F:\dgx` 这种固定路径再加这一行（要开发者模式）。
-- **JSON 里反斜杠双写**：`"F:\\dgx"` 才表示 `F:\dgx`。
-- **`tmuxSession` 建议区分**（如 `srb-ai-dgx`），虽然现在默认走长连接、不依赖它。
-
----
-
-## 10. 安全说明
-
-| 项目 | 说明 |
+| 字段 | 含义 |
 |---|---|
-| 凭据存储 | 密码/密钥明文存于 `servers.json`，请收紧文件权限，勿入版本库 |
-| 凭据不进代码库 | **本项目的文档、代码、测试脚本里一律不含真实 IP / 账号 / 密码 / 主机指纹**，全是占位符。真实值只允许存在于你本机的 `servers.json` |
-| AI 的凭据纪律 | AI 首次接入必须**向用户索要**连接信息（见 §7.2），不得猜测、推断或复用任何凭据；也不得把凭据写进代码、文档或自己的笔记 |
-| 中间人防护 | `hostkey` 指纹校验，plink 拒绝指纹不符的服务器 |
-| 命令注入防护 | 命令经 base64 + 单引号转义传输，特殊字符不会破坏 SSH 命令行 |
-| MCP 权限边界 | `exec` 工具 = 服务器 shell 的完整权限；AI 提示词注入风险由使用者自担 |
-| 传输加密 | 全程 SSH 加密（plink） |
-| 挂载加密 | 挂载链路底层同样是 SSH |
+| 顶层 `plink` | Plink 路径；相对路径按项目根目录解析，例如 `bin\\plink.exe` |
+| `servers.<name>` | 服务器 profile；工具的 `server` 参数使用此名称 |
+| `host`、`port`、`user` | SSH 地址、端口、账户；端口默认 22 |
+| `password` / `keyFile` | 二选一；完整功能使用 OpenSSH 格式私钥，PPK 需先转换 |
+| `hostkey` | 固定的 `SHA256:...` 主机指纹；`trust_host` 可获取供核对 |
+| `remote` | 映射的远端根目录，默认 `/home/<user>`；也是 MCP 默认 cwd |
+| `drive` | 本地盘符，例如 `M:`；仅命令访问可不配置，每台映射服务器使用不同盘符 |
+| `mount` | 可选本地目录链接；留空时只使用盘符，创建链接可能需要 Windows 开发者模式或权限 |
+| `default` | JSON 配置中的默认服务器标记；MCP 配置时对应 `isDefault` |
+| `note` | 可选备注 |
 
----
+`servers.json` 可明文保存密码，工具回复会隐藏密码；文件及备份不应进入 Git 或发布包。挂载固定主机密钥，并在 `.srb-mounts/` 保存进程归属与公钥记录；卸载只处理已确认归属的进程或映射。
 
-## 11. 故障排查
+常用环境变量：`SRB_CONFIG` 指定服务器配置文件，`SRB_PLINK` 指定 Plink，`SRB_SSHFS` 指定 SSHFS，`SRB_KNOWN_HOSTS` 指定已知公钥文件。Codex 注册目录可用 `SRB_CODEX_CONFIG_DIR` 指定；未设置时遵循 `CODEX_HOME` / 默认用户目录。
 
-| 症状 | 原因 | 解决 |
-|---|---|---|
-| **盘符里的文件"变成"另一台服务器** | **两台服务器配了同一个 `drive`，后挂的顶掉了先挂的** | 跑 `remount_all.cmd` 看它报的冲突清单，按提示改 `servers.json` 的 `drive` |
-| 重启后盘符消失 / 文件夹打不开 | `net use` 的持久化映射在登录时网络未就绪就静默失败了 | 双击 `remount_all.cmd`（幂等，可重复跑） |
-| `net use` 报错误 67 / 87 | SSHFS-Win 的 net use 只支持盘符，不支持目录 | 用 `ssh-remote setup`，别手写目录挂载 |
-| 挂载后提示"密码无效" | 用了 cmdkey 存的 Windows 凭据，SSHFS-Win 不读 | 密码内联进 net use 命令行（`ssh-remote setup` 已自动处理） |
-| `F:\<user>` 是空目录/打不开 | 符号链接没建成（缺开发者模式/管理员），或被环境实体化 | **改用纯盘符模式**（`servers.json` 删掉 `mount` 那一行，直接用 `M:`）；或开开发者模式 |
-| `mklink` 拒绝访问 | 无符号链接权限 | 设置 → 更新和安全 → 开发者模式 → 开；或管理员运行；**或干脆不填 `mount`** |
-| plink 报 host key 验证失败 | servers.json 缺 `hostkey` | `trust_host` 工具或 ssh-keyscan 拿指纹填进去 |
-| 命令执行"哨兵超时" | 命令超过 timeout 仍在跑 | 不是错误。改用 `nohup ... > log 2>&1 &` + `tail` |
-| 输出末尾出现 `?` 乱码 | net use 输出是 GBK 编码，已强制净化成 ASCII | 功能不受影响，忽略即可 |
-| MCP 工具不出现/调用失败 | 注册后没点"信任" | 连接器管理页 → 自定义连接器 → ssh-remote-bridge → 信任 |
-| `ssh-remote: command not found` | 没注册全局命令 | `npm install -g .`，或用 `node remote-shell.mjs` |
-| 首次连接要 5-6 秒 | 服务器侧 SSH 握手成本（KEX/PAM），与客户端无关 | 只需等一次，之后每条命令 ms 级 |
-| 长连接起不来, 自动回落 tmux | 极少数服务器缺 base64/setsid | 装齐即可；或 `SRB_TRANSPORT=tmux` 强制旧路 |
-| 输出被截断（30K 字符） | 防爆缓冲的设计 | 用 `head`/`tail`/`grep` 取片段，或重定向到文件再 read_file |
-| AI 沙箱里跑挂载失败 | 沙箱限制 spawn/符号链接 | 挂载必须在本机真实终端执行 |
-| **重启后文件夹打不开** | 盘符映射没了（`/persistent:yes` 在登录时网络未就绪就静默失败） | 双击 `remount_all.cmd`；加 `--check` 可先只诊断 |
-| 重启后盘符能挂上但文件夹路径仍不通 | 符号链接没建成（需开发者模式/管理员） | 删掉 `servers.json` 的 `mount` 行改纯盘符；或设置 → 系统 → 可选功能 → 开「开发者模式」 |
+## 6. 当前运行环境
 
----
+以下为本机 **1.5.0** 使用的工具版本，并非换机器后自动具备：
 
-## 12. 已知限制
+| 组件 | 版本与位置 |
+|---|---|
+| Node.js / npm | 26.12.0 Current 正式版 / 11.20.0；`runtime/` |
+| Plink | 0.85；`bin/plink.exe` |
+| 7-Zip | 26.04；`runtime/7zip/` |
+| SSHFS | 3.7.2+srb.1；`runtime/sshfs/`，已启用四处条件变量销毁修复 |
+| Cygwin / 控制台辅助组件 | 3.6.11；包含 `runtime/sshfs/bin/cygwin-console-helper.exe`，挂载运行库必需 |
+| OpenSSH / OpenSSL | 10.5p1 / 3.5.9；独立 SSHFS 运行库中的官方 Cygwin 二进制 |
+| WinFsp / ssh2 / rclone | 2.1 / 1.17.0 / 1.75.2 |
 
-1. **仅支持 Windows 本机**：net use / mklink / sshfs.r 都是 Windows 特性。Linux/macOS 可用 `sshfs` 直接挂载，执行引擎（`engine.mjs` 的 execOn）本身跨平台可复用。
-2. **pty 单行 4096 字节限制**：`write_file` 已自动 base64 分片绕过；单次 exec 输出上限 30000 字符（防爆缓冲，可调）。
-3. **交互式全屏程序**（vim/htop/top/nvitop）跑不了快通道 —— 长连接没有 PTY。
-   用 `ssh-remote` 的 `raw <cmd>` 模式（走 `plink -t` 分配真 PTY，代价是一次 SSH 握手约 5 秒）。
-   纯文本循环刷新的命令（`gpustat -i` / `nvidia-smi -l` / `tail -f` / `ping`）**不受影响**，
-   它们已在快通道上支持实时输出（见 §6.2.1）。
-4. **每次 exec 一次 plink 连接**：含 SSH 握手开销（约 1 秒），批量小命令建议合并成一条 shell 脚本执行。
-5. **每台服务器一个盘符，且盘符不能重复**：Windows 盘符资源有限（26 个），实际够用，但**重复会互相顶掉**——`remount_all.cmd` 每次运行前会自动检测并给出修改建议。
-6. **长连接作用域 = MCP server 进程**：每个 WorkBuddy/Codex 进程各持一条到服务器的 SSH 长连接，进程退出即断开。同一服务器开两个客户端会有两条连接，属正常；两边各自的命令执行互不影响。
+CLI 和已更新的 MCP 注册优先使用项目独立工具。第三方二进制不进入 Git/npm 包，换机器需重新部署；源码安装使用锁定的 npm 依赖及 Cygwin 包清单。SSHFS 3.7.2 未包含后续上游版本的全部修复。
 
----
+## 7. 故障排查
 
-*文档版本：2026-10-15 · 对应代码版本：ssh-remote-bridge v1.0.0*
+| 现象 | 处理 |
+|---|---|
+| 重启后 M: 消失或目录打不开 | 从本机项目目录执行第 3 节恢复入口，先确认目标 profile |
+| 盘符被其他映射占用 | 查看状态并确认归属；不要覆盖或强行删除其他映射 |
+| 已存在的深层目录 mkdir 报 EPERM | 检查活动挂载是否仍使用旧 SSHFS；>=3.7.2 修复了该错误码，升级后需重新挂载 |
+| 对盘符根目录 mkdir 报 EPERM | Windows/Node 的根目录行为，不能据此认定深层目录或文件不可写 |
+| Edit 报 ModifyBackup / UNC 路径错误 | 保留工具名、完整路径、原始错误及失败后内容；这是独立问题，尚未稳定复现 |
+| 写入失败后准备改走 SSH | 先核对实际文件状态；不要重复追加，不绕过宿主安全策略 |
+| 命令长时间没有输出 | 用 `read_result` 等待新内容；确认程序刷新 stdout，不要重跑原命令 |
+| 输出被截断 | 区分 RESPONSE-LIMIT 与 REMOTE-CAPTURE-LIMIT，按第 2 节读取片段或服务器日志 |
+| 主机指纹不匹配 | 核对服务器身份和主机密钥变化；不要关闭校验来继续连接 |
+| UNC/盘符已失效，宿主命令启动失败 | 将工具 `workdir` 改为本机项目目录，再执行恢复 |
+| 工具看不到新版本、挂载仍用旧程序 | MCP 重载影响命令进程；挂载运行库更换需要卸载再挂载，两者分别处理 |
 
-</details>
+## 8. 维护与更新记录
+
+桥接器自身的检查入口：`npm test` 为轻量隔离回归；`npm run test:remote -- <profile>` 检查远端命令通道；`npm run test:lifecycle -- <profile>` 检查连接复用、远端超时、后台进程清理、退出和排队行为；`npm run test:mcp-live` 检查默认服务器的增量输出；`npm run test:terminal -- <profile>` 检查远端 PTY。远端检查会建立连接并执行测试命令，应在需要验证时运行。
+
+1.5.0 重构远端执行循环、CLI 会话与退出清理，增加空闲回收，减少重复连接和输出解析的内存复制。更新后**重新加载 MCP，退出并重开 CLI**；现有 M: 无需重新挂载。资源实测与剩余风险见 [本轮审计](AUDIT-2026-10-19.md)；历史记录见 [FIXES.zh-CN.md](FIXES.zh-CN.md)。[English README](README.en.md) · [MIT License](LICENSE)

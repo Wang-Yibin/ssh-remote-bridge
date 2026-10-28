@@ -14,7 +14,7 @@ rem  up front, with a suggested free letter for each one.
 rem
 rem  If the optional symlink step fails, either:
 rem    - Settings - System - Optional features - enable Developer Mode, or
-rem    - right-click this file - Run as administrator
+rem    - use the drive directly in the normal user session
 rem  ...or simply drop the "mount" field from servers.json and use the
 rem  plain drive letter (recommended).
 rem ============================================================

@@ -25,8 +25,7 @@ if not defined NODE (
 "%NODE%" "%SRB_HOME%remote-shell.mjs" umount %*
 set "RC=%errorlevel%"
 
-rem stop rclone fallback mounts too (silently ignored if not running)
-taskkill /IM rclone.exe /F >nul 2>&1
+rem rclone mounts must be stopped in their own foreground window.
 
 if not "%RC%"=="0" (
   echo.

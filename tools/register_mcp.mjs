@@ -24,6 +24,7 @@ const CFG = path.join(os.homedir(), '.workbuddy', 'mcp.json');
 function pickNode() {
   const bundled = path.join(ROOT, 'runtime', 'node.exe');
   if (fs.existsSync(bundled)) return bundled;
+  if(process.execPath && fs.existsSync(process.execPath)) return process.execPath;
   const r = spawnSync(process.platform === 'win32' ? 'where' : 'which',
     ['node'], { encoding: 'utf8', shell: false });
   const first = (r.stdout || '').split(/\r?\n/).find((s) => s.trim().endsWith('node.exe') || s.trim() === 'node');
@@ -51,19 +52,23 @@ let cfg = null;
 if (fs.existsSync(CFG)) {
   try {
     cfg = JSON.parse(fs.readFileSync(CFG, 'utf8'));
-    if (!cfg || typeof cfg !== 'object') cfg = null;
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('invalid root object');
   } catch (e) {
-    const bak = `${CFG}.bak`;
+    const bak = `${CFG}.${Date.now()}.bak`;
     fs.copyFileSync(CFG, bak);
     console.log(`[register] existing mcp.json is not valid JSON - backed up to ${bak}`);
-    cfg = null;
+    throw new Error('existing mcp.json is invalid; repair it before registering (backup: '+bak+')');
   }
 }
 if (!cfg) cfg = {};
-if (!cfg.mcpServers || typeof cfg.mcpServers !== 'object') cfg.mcpServers = {};
+if(cfg.mcpServers!==undefined && (!cfg.mcpServers || typeof cfg.mcpServers!=='object' || Array.isArray(cfg.mcpServers))) throw new Error('invalid mcpServers; existing configuration was kept');
+cfg.mcpServers ??= {};
 
 const before = Object.keys(cfg.mcpServers);
+const previous=cfg.mcpServers['ssh-remote-bridge'];
+if(previous!==undefined && (!previous || typeof previous!=='object' || Array.isArray(previous))) throw new Error('invalid bridge entry; existing configuration was kept');
 cfg.mcpServers['ssh-remote-bridge'] = {
+  ...previous,
   command: NODE_EXE,
   args: [SERVER_MJS],
 };
@@ -71,7 +76,9 @@ cfg.mcpServers['ssh-remote-bridge'] = {
 // ---- 写回 ----
 try {
   fs.mkdirSync(path.dirname(CFG), { recursive: true });
-  fs.writeFileSync(CFG, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  const temp=CFG+'.'+process.pid+'.tmp';
+  try {fs.writeFileSync(temp, JSON.stringify(cfg, null, 2) + '\n', {flag:'wx',mode:0o600});fs.renameSync(temp,CFG);}
+  finally {try{fs.unlinkSync(temp);}catch{}}
 } catch (e) {
   console.error(`[register] cannot write ${CFG}: ${e.message}`);
   process.exit(1);

@@ -61,7 +61,7 @@ function rpc(method, params) {
 
 async function call(name, args) {
   const t0 = Date.now();
-  const r = await rpc('tools/call', { name, arguments: args });
+  const r = await rpc('tools/call', { name, arguments: name==='exec' ? {yield_time_ms:30000,...args} : args });
   const ms = Date.now() - t0;
   const text = (r.result && r.result.content && r.result.content[0] && r.result.content[0].text) || JSON.stringify(r);
   return { ms, text, isError: !!(r.result && r.result.isError) };
@@ -213,8 +213,8 @@ await t('大输出只取尾部', 'exec', { command: 'seq 1 20000 | wc -l' }, has
 await t('大输出字节数精确校验（30000 行=168894 字节）', 'exec', { command: 'seq 1 30000 | wc -c' }, has('168894', 'exit=0'));
 await t('单行超长输出（200KB）', 'exec', { command: `python3 -c "print('x'*200000)" | wc -c` }, has('200001', 'exit=0'));
 await t('大内容 write_file → read_file 往返（200KB）', 'write_file', { path: '/tmp/srbdev/big.txt', content: 'ABCDEFGH'.repeat(25000) + '中文尾' }, has('exit=0'));
-await t('大文件读回大小校验（显式 max_bytes）', 'read_file', { path: '/tmp/srbdev/big.txt', max_bytes: 262144 }, (x) => (x.includes('200009 bytes') ? true : { ok: false, why: x.slice(0, 100) }));
-await t('大文件默认 64KB 截断（设计行为）', 'read_file', { path: '/tmp/srbdev/big.txt' }, has('TRUNCATED at max_bytes'));
+await t('大文件读回大小校验（显式 max_bytes）', 'read_file', { path: '/tmp/srbdev/big.txt', max_bytes: 262144 }, (x) => (x.includes('bytes=200009') ? true : { ok: false, why: x.slice(0, 100) }));
+await t('大文件默认 8KB 分页（设计行为）', 'read_file', { path: '/tmp/srbdev/big.txt' }, has('MORE'));
 await t('大输出 tail', 'exec', { command: 'seq 1 5000 | tail -2' }, has('4999', '5000', 'exit=0'));
 await t('超时被中断（timeout=5, sleep 8）', 'exec', { command: 'sleep 8', timeout: 5 }, has('TIMED-OUT'));
 await t('超时后连接照常', 'exec', { command: 'echo alive-after-timeout' }, has('alive-after-timeout', 'exit=0'));
@@ -231,18 +231,18 @@ await t('git status', 'exec', { command: 'cd /tmp/srbdev/gitrepo && git status -
 
 // ---------------------------------------------------------------- 9. 二进制 / 错误路径
 console.log('\n[9] 二进制与错误处理');
-await t('读二进制 → base64', 'read_file', { path: '/bin/ls', max_bytes: 2048 }, has('BINARY -> base64'));
+await t('读二进制 → base64', 'read_file', { path: '/bin/ls', max_bytes: 2048 }, has('BINARY'));
 await t('读不存在的文件 → isError', 'read_file', { path: '/no/such/file.txt' }, (x, r) => (r.isError ? true : { ok: false, why: 'should be isError' }));
 await t('写失败路径 → isError', 'write_file', { path: '/proc/cannot/write/here.txt', content: 'x' }, (x, r) => (r.isError ? true : { ok: false, why: 'should be isError' }));
 await t('exec 缺参数 → isError', 'exec', {}, (x, r) => (r.isError ? true : { ok: false, why: 'should be isError' }));
-await t('大文件读（截断到 max_bytes）', 'read_file', { path: '/bin/bash', max_bytes: 5000 }, has('TRUNCATED at max_bytes'));
+await t('大文件读（截断到 max_bytes）', 'read_file', { path: '/bin/bash', max_bytes: 5000 }, has('MORE'));
 
 // ---------------------------------------------------------------- 10. 状态保持 + 清理
 console.log('\n[10] 状态保持与清理');
 await t('cd 保持（相对路径）', 'exec', { command: 'cd /tmp/srbdev/gitrepo && pwd' }, has('/tmp/srbdev/gitrepo'));
-await t('上一条的 cd 还在生效', 'exec', { command: 'ls | head -3' }, has('count.py'));
+await t('显式 cwd 定位项目', 'exec', { command: 'ls | head -3', cwd:'/tmp/srbdev/gitrepo' }, has('count.py'));
 await t('cd 到不存在的目录 → 报错', 'exec', { command: 'cd /no/such/dir' }, (x) => (x.includes('exit=') && x.includes('exit=1') ? true : { ok: false, why: x.slice(0, 160) }));
-await t('失败的 cd 不影响已有状态', 'exec', { command: 'pwd' }, has('/tmp/srbdev/gitrepo', 'exit=0'));
+await t('失败的 cd 不影响后续独立任务', 'exec', { command: 'pwd', cwd:'/tmp/srbdev/gitrepo' }, has('/tmp/srbdev/gitrepo', 'exit=0'));
 await t('清理', 'exec', { command: 'cd /tmp && rm -rf /tmp/srbdev && ls /tmp/srbdev 2>&1 | head -1' }, (x) => (x.includes('exit=0') ? true : { ok: false, why: 'cleanup failed' }));
 
 console.log(`\n================ 结果: ${pass} 通过 / ${fail} 失败 ================`);

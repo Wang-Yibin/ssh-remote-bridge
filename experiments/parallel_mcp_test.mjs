@@ -37,7 +37,7 @@ const rpc = (method, params) =>
   });
 const call = async (name, args) => {
   const t0 = Date.now();
-  const r = await rpc('tools/call', { name, arguments: args });
+  const r = await rpc('tools/call', { name, arguments: name==='exec' ? {yield_time_ms:30000,...args} : args });
   const text = (r.result?.content?.[0]?.text) || JSON.stringify(r);
   return { ms: Date.now() - t0, text };
 };

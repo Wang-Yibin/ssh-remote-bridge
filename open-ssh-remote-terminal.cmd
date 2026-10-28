@@ -17,10 +17,11 @@ rem
 rem  Tip: pin this file to the taskbar, or put a shortcut on the
 rem  desktop, for one-click remote terminals.
 rem ============================================================
-setlocal enabledelayedexpansion
+setlocal DisableDelayedExpansion
 
 set "SRB_HOME=%~dp0"
 set "TARGET=%~1"
+set "PROFILE="
 if not "%~2"=="" set "PROFILE=%~2"
 
 rem --- locate node ---
@@ -50,5 +51,5 @@ if not exist "%TARGET%" (
   exit /b 1
 )
 
-start "" powershell.exe -NoExit -Command "Set-Location -LiteralPath '%TARGET%'; & '%NODE%' '%SRB_HOME%remote-shell.mjs' %PROFILE%"
+start "" powershell.exe -NoExit -Command "Set-Location -LiteralPath $env:TARGET; $script=Join-Path $env:SRB_HOME 'remote-shell.mjs'; if($env:PROFILE){ & $env:NODE $script $env:PROFILE }else{ & $env:NODE $script }"
 exit /b 0

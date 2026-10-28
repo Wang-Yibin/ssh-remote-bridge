@@ -51,6 +51,7 @@ console.log('\n[1] 纯逻辑（不连服务器）');
 console.log('\n[2] Q 查询帧');
 {
   const rex = engine.getExecFor(srv);
+  await rex.ensure();
   const r1 = await rex.query('echo HELLO_FROM_Q');
   ok('Q 能执行命令', r1.output.includes('HELLO_FROM_Q'), JSON.stringify(r1.output.trim()));
 
@@ -68,7 +69,7 @@ console.log('\n[3] 补全候选（需连接）');
   await rex.ensure();
   resetCompletionCache();
   const c = makeCompleter(srv, { isBusy: () => false });
-  const ask = (line) => new Promise((res) => c(line, (e, m) => res(m)));
+  const ask = (line) => new Promise((res) => c(line, (e, m) => res(m[0])));
 
   const gpust = await ask('gpust');
   ok('命令名补全 gpustat', gpust.includes('gpustat'), gpust.join(' '));
@@ -78,17 +79,17 @@ console.log('\n[3] 补全候选（需连接）');
 
   const cdAd = await ask('cd AD');
   // 目录候选带尾斜杠（ADMN 是文件夹），这样能直接继续敲下一层
-  ok('参数位补出家目录文件夹 (cd AD -> ADMN/)', cdAd.includes('ADMN/'), cdAd.join(' ') || '(无候选)');
+  ok('参数位补出家目录文件夹 (cd AD -> ADMN/)', cdAd.includes('cd ADMN/'), cdAd.join(' ') || '(无候选)');
 
-  const absHome = await ask('cd /home/wa');
-  ok('绝对路径补全 /home/wa -> /home/wangyibin/', absHome.includes('/home/wangyibin/'), absHome.join(' ') || '(无候选)');
+  const absHome = await ask('cat /etc/ho');
+  ok('绝对路径补全 /home/wa -> /etc/hosts', absHome.includes('cat /etc/hosts'), absHome.join(' ') || '(无候选)');
 
   const dirSlash = await ask('cd /tm');
-  ok('目录候选带尾斜杠便于下钻', dirSlash.some((x) => x === '/tmp/'), dirSlash.join(' '));
+  ok('目录候选带尾斜杠便于下钻', dirSlash.some((x) => x === 'cd /tmp/'), dirSlash.join(' '));
 
   // 带扩展名的算文件, 不加尾斜杠
   const hosts = await ask('cat /etc/hosts');
-  ok('文件候选不加尾斜杠', hosts.includes('/etc/hosts') && !hosts.includes('/etc/hosts/'), hosts.join(' '));
+  ok('文件候选不加尾斜杠', hosts.includes('cat /etc/hosts') && !hosts.includes('cat /etc/hosts/'), hosts.join(' '));
 
   const firstWord = await ask('AD');
   ok('首词位不补文件夹（AD 在首词位无候选）', firstWord.length === 0, firstWord.join(' '));
@@ -98,7 +99,7 @@ console.log('\n[4] 缓存');
 {
   resetCompletionCache();
   const c = makeCompleter(srv, { isBusy: () => false });
-  const ask = (line) => new Promise((res) => c(line, (e, m) => res(m)));
+  const ask = (line) => new Promise((res) => c(line, (e, m) => res(m[0])));
   await ask('zzz_cold_query_xyz'); // 触发远端拉取
   const t0 = Date.now();
   await ask('gpust');
@@ -113,7 +114,7 @@ console.log('\n[5] 干扰防护');
 {
   const busyC = makeCompleter(srv, { isBusy: () => true });
   const t0 = Date.now();
-  const bm = await new Promise((r) => busyC('gpust', (e, m) => r(m)));
+  const bm = await new Promise((r) => busyC('gpust', (e, m) => r(m[0])));
   ok('busy 时立刻返回空', bm.length === 0 && Date.now() - t0 < 50, `${Date.now() - t0}ms`);
 
   const rex = engine.getExecFor(srv);

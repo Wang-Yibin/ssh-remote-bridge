@@ -8,7 +8,7 @@ import * as engine from '../lib/engine.mjs';
 
 try {
   const srv = engine.getServer();
-  console.log(srv.mount || process.cwd());
+  console.log(srv.mount || (srv.drive ? srv.drive+'\\' : process.cwd()));
 } catch (e) {
   console.log(process.cwd());
 }

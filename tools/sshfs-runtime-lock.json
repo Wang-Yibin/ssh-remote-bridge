@@ -1,0 +1,156 @@
+[
+  {
+    "name": "sshfs",
+    "archive": "x86_64/release/sshfs/sshfs-3.7.2-2.tar.xz",
+    "size": 45080,
+    "sha512": "7a87678b97f131bc416ffac7b7d034815643e1d2481998567d6936c7e390122fe43a3f75f97d6987eddc5a33b6be0bacce0afdf03f231d1ce6bb88a498d82d57",
+    "source": "x86_64/release/sshfs/sshfs-3.7.2-2-src.tar.xz"
+  },
+  {
+    "name": "cygwin",
+    "archive": "x86_64/release/cygwin/cygwin-3.6.11-1-x86_64.tar.xz",
+    "size": 1621088,
+    "sha512": "1c33f8396d78eca035106325c5b90ff1165a6b78839f16190ec00f025067306522a23a5ec1b99557974e471649104cd31dad68685d2a544c31fb4494297a744a",
+    "source": "src/release/cygwin/cygwin-3.6.11-1-src.tar.xz"
+  },
+  {
+    "name": "cygfuse",
+    "archive": "x86_64/release/cygfuse/cygfuse-3.2.0-3.tar.xz",
+    "size": 18876,
+    "sha512": "a81228725e6f89f07eb245005b0d85cbdb3db6d3f261db9e15d01b3985d3c65a97621ae867304e5bd7fb1cae966c213307ec06273605abb4eb8904be291d1c24",
+    "source": "x86_64/release/cygfuse/cygfuse-3.2.0-3-src.tar.xz"
+  },
+  {
+    "name": "libglib2.0_0",
+    "archive": "x86_64/release/glib2.0/libglib2.0_0/libglib2.0_0-2.90.0-1-x86_64.tar.xz",
+    "size": 2604400,
+    "sha512": "76bcdece88394425cc11db67b3d2be5aedcb447e35a01468b3f0c8cd269c741a2c8fd7cfa86686512766ec46dd800e5ce6c3851fd91e2dc8fcc57a093f1c6929",
+    "source": "x86_64/release/glib2.0/glib2.0-2.90.0-1-src.tar.xz"
+  },
+  {
+    "name": "libffi8",
+    "archive": "x86_64/release/libffi/libffi8/libffi8-3.8.0-1-x86_64.tar.xz",
+    "size": 196924,
+    "sha512": "935a0567f740a314d70ecd4adc8c4cf5ad37c6fb43f2d26dee882d4fda71f08efb2646bee10cee6e2000f52e25cce87fa29ce07665ba6d22532e0daa76bc887c",
+    "source": "src/release/libffi/libffi-3.8.0-1-src.tar.xz"
+  },
+  {
+    "name": "libpcre2_8_0",
+    "archive": "x86_64/release/pcre2/libpcre2_8_0/libpcre2_8_0-10.49-1-x86_64.tar.zst",
+    "size": 244195,
+    "sha512": "4093be5fdc2077d078865c1a553df6bc2fe5c02b4ea106e605c4d92dfd876c68ca894908539e86fdb089d60b376776a941f2645c21b2cad76027a335ac338bb0",
+    "source": "src/release/pcre2/pcre2-10.49-1-src.tar.zst"
+  },
+  {
+    "name": "libgcc1",
+    "archive": "x86_64/release/gcc/libgcc1/libgcc1-14.4.0-1-x86_64.tar.zst",
+    "size": 59166,
+    "sha512": "5ac8a56e5eee285efcd6dbd05a473e795e181021d7194b8a98dfe2fa201a71f0abe2908e0b4c81490eb5ef472efaeac8e56a61a5f289eee4ad6e90e52a844ff8",
+    "source": "x86_64/release/gcc/gcc-14.4.0-1-src.tar.zst"
+  },
+  {
+    "name": "libintl8",
+    "archive": "x86_64/release/gettext/libintl8/libintl8-0.22.5-1.tar.xz",
+    "size": 43256,
+    "sha512": "370a19af888bc7c9ed95cf8ade0d36d5e7cdb634abdebcba260cad61fa9a4cc05b5e748e315c9709f66861e8756b227d6757d529846591189e19ee2b2d00002d",
+    "source": "x86_64/release/gettext/gettext-0.22.5-1-src.tar.xz"
+  },
+  {
+    "name": "libiconv2",
+    "archive": "x86_64/release/libiconv/libiconv2/libiconv2-1.19-2-x86_64.tar.xz",
+    "size": 555664,
+    "sha512": "a1b23e24e0a495e7163923bcf40a4b933403e0826cfc0d9bde785bc92c909b8c4fb94b1e6b2c0242f4328a723855e72ff3baab9f557ef855b7fe7a7d901b0943",
+    "source": "src/release/libiconv/libiconv-1.19-2-src.tar.xz"
+  },
+  {
+    "name": "zlib0",
+    "archive": "x86_64/release/zlib/zlib0/zlib0-1.3.2-1-x86_64.tar.zst",
+    "size": 46254,
+    "sha512": "d79ba6098cadf6bf2f32f35d9cd54729293c64b3c9daabb9d080f52861a19db71544d5710fdbd61ff45e7c2ae4eecb3f2e3b8a1e3bc05695b8cfe01c7639c53a",
+    "source": "x86_64/release/zlib/zlib-1.3.2-1-src.tar.zst"
+  },
+  {
+    "name": "openssh",
+    "archive": "x86_64/release/openssh/openssh-10.5p1-1-x86_64.tar.zst",
+    "size": 1340096,
+    "sha512": "dc7e8b1afad9253cb90c8080518c8b014274fad76fca9bb7534366d52e947e52807551d278d348c23b9bba322d62e7101db284000965c53b427ac3846dc22c3c",
+    "source": "x86_64/release/openssh/openssh-10.5p1-1-src.tar.zst"
+  },
+  {
+    "name": "libssl3",
+    "archive": "x86_64/release/openssl/libssl3/libssl3-3.5.9-1-x86_64.tar.zst",
+    "size": 2101048,
+    "sha512": "cc3836812d1133caaab81c17e79efffb47aa5172dce3d4644682ed73a2df2b0754d2e1e8df879479d0be148d4a329b4cd76e15dfaff6e7874fa8aabe298a8288",
+    "source": "src/release/openssl/openssl-3.5.9-1-src.tar.zst"
+  },
+  {
+    "name": "libfido2",
+    "archive": "x86_64/release/libfido2/libfido2-1.17.0-1-x86_64.tar.xz",
+    "size": 102452,
+    "sha512": "d6134d478fda6738038d59834210f9ee6ab33fc7acafc9c00f9e439090ddcb404c271056732556b74a81325006d429cacb6000321ec370a93f2b43fb2cd0d118",
+    "source": "src/release/libfido2/libfido2-1.17.0-1-src.tar.xz"
+  },
+  {
+    "name": "libedit0",
+    "archive": "x86_64/release/libedit/libedit0/libedit0-20251016-1-x86_64.tar.xz",
+    "size": 77960,
+    "sha512": "4c5afd4f494da552e3073dd9cd0a25b95d29065fb9b68ad3dfc2e2546a40e9f038821dd15bbece3f1d026276df798afc3a90dd09c1c9265df6fb262055781170",
+    "source": "src/release/libedit/libedit-20251016-1-src.tar.xz"
+  },
+  {
+    "name": "libncursesw10",
+    "archive": "x86_64/release/ncurses/libncursesw10/libncursesw10-6.5+20240427-1.tar.xz",
+    "size": 393928,
+    "sha512": "08102f7a7083cb5663fecc46d819f2ece4123444a8f94c42300f03f7eebd40395f556c44b22ab58bf57321b44d9b8fb8b19358e535c7500d36e52d48b05dcca8",
+    "source": "x86_64/release/ncurses/ncurses-6.5+20240427-1-src.tar.xz"
+  },
+  {
+    "name": "libcrypt2",
+    "archive": "x86_64/release/libxcrypt/libcrypt2/libcrypt2-4.5.2-1-x86_64.tar.xz",
+    "size": 106104,
+    "sha512": "7668d29aaebba8ca94e48e810d92108db72b067b2786cea8dcf4a049c29f20f0aeb8653a6e9524869c69e0b1df9d4d0ac499a052a86f0d44178e8a8167002c97",
+    "source": "src/release/libxcrypt/libxcrypt-4.5.2-1-src.tar.xz"
+  },
+  {
+    "name": "libgssapi_krb5_2",
+    "archive": "x86_64/release/krb5/libgssapi_krb5_2/libgssapi_krb5_2-1.15.2-2.tar.xz",
+    "size": 102828,
+    "sha512": "0b9922b28f24f260bccb179c52354377173c1f0243420fb655154b4bd6da99af33b17c172dc46344d9fb38756abb0d8d449d5c7fba7f179dda7a3337c330224f",
+    "source": "x86_64/release/krb5/krb5-1.15.2-2-src.tar.xz"
+  },
+  {
+    "name": "libkrb5_3",
+    "archive": "x86_64/release/krb5/libkrb5_3/libkrb5_3-1.15.2-2.tar.xz",
+    "size": 236076,
+    "sha512": "639bb23f5bafc62fe6d36d44f1786445b949db5547dee66c73ec75c5d1d9d3444b8f326ffae811fb18fed3e85fead713362cf2c2488f880d3f5bc8ea087cee64",
+    "source": "x86_64/release/krb5/krb5-1.15.2-2-src.tar.xz"
+  },
+  {
+    "name": "libk5crypto3",
+    "archive": "x86_64/release/krb5/libk5crypto3/libk5crypto3-1.15.2-2.tar.xz",
+    "size": 73344,
+    "sha512": "249808d087f1a1ac7a5b117aaf499e173c9e404b224b9d9ff5a5fa1d2ace8b7c1185100bfa33174a82cbc250f376671d48b7d93d11924b5c4b524897841e2967",
+    "source": "x86_64/release/krb5/krb5-1.15.2-2-src.tar.xz"
+  },
+  {
+    "name": "libkrb5support0",
+    "archive": "x86_64/release/krb5/libkrb5support0/libkrb5support0-1.15.2-2.tar.xz",
+    "size": 14424,
+    "sha512": "93162fc8430153b054c77c1dea7d9df6be8422922a9ee6fd923b46797c466200d78e80cb4e17387dd18ed1631a7828a57169fdc743c7b2a7a270259aa586113d",
+    "source": "x86_64/release/krb5/krb5-1.15.2-2-src.tar.xz"
+  },
+  {
+    "name": "libcom_err2",
+    "archive": "x86_64/release/e2fsprogs/libcom_err2/libcom_err2-1.44.5-1.tar.xz",
+    "size": 4132,
+    "sha512": "3344fbc09364d789e92a81af5ba1e830dd47cef3392a1ee389a2fd49a9cc56a63afc78bebefb92c025d8222e6e454c114d572f0f395e5e20ede2b2266b0fe709",
+    "source": "x86_64/release/e2fsprogs/e2fsprogs-1.44.5-1-src.tar.xz"
+  },
+  {
+    "name": "libzstd1",
+    "archive": "x86_64/release/zstd/libzstd1/libzstd1-1.5.7-1.tar.zst",
+    "size": 253786,
+    "sha512": "f89cdaa004487ec8c4796b8f56887c81f6f497873c1495b9cb585ffe6c8d6e6b8ad4b52617d5238075f965f1fe001da287d9a00d121590274b2d87672b415a0f",
+    "source": "x86_64/release/zstd/zstd-1.5.7-1-src.tar.zst"
+  }
+]

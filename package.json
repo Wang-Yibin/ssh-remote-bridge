@@ -1,7 +1,7 @@
 {
   "name": "ssh-remote-bridge",
-  "version": "1.2.0",
-  "description": "Map a remote Linux server's home directory to a local Windows drive and forward every command to it - CLI + MCP server, multi-server, Windows only",
+  "version": "1.5.0",
+  "description": "Prefer local mounted files and lightweight host computation, with persistent SSH for remote workloads - CLI + MCP server, multi-server, Windows only",
   "type": "module",
   "bin": {
     "ssh-remote": "remote-shell.mjs"
@@ -23,17 +23,37 @@
     "*.cmd",
     "lib/",
     "mcp/",
-    "tools/",
+    "tools/*.mjs",
+    "tools/sshfs-runtime-lock.json",
     "remote-shell.mjs",
     "README.md",
+    "README.en.md",
+    "FIXES.zh-CN.md",
+    "AUDIT-2026-10-19.md",
     "LICENSE",
-    "servers.example.json"
+    "servers.example.json",
+    "tests/regression.mjs",
+    "tests/remote-regression.mjs",
+    "tests/lifecycle.mjs",
+    "tests/live-stream.mjs",
+    "tests/terminal-smoke.mjs",
+    "tools/sshfs-condition-lifetimes.patch",
+    "BUILD-SSHFS.md"
   ],
   "scripts": {
-    "test": "node experiments/mcp_dev_suite.mjs",
+    "test": "node --no-warnings --experimental-vm-modules --test tests/regression.mjs",
+    "test:lifecycle": "node tests/lifecycle.mjs",
     "remount": "node tools/restore_all.mjs",
     "check-mounts": "node tools/restore_all.mjs --check",
+    "install:sshfs-runtime": "node tools/install_sshfs_runtime.mjs",
     "test:stream": "node experiments/test_stream.mjs",
-    "test:complete": "node experiments/test_complete.mjs"
+    "test:complete": "node experiments/test_complete.mjs",
+    "test:integration": "node experiments/mcp_dev_suite.mjs",
+    "test:remote": "node tests/remote-regression.mjs",
+    "test:mcp-live": "node tests/live-stream.mjs",
+    "test:terminal": "node tests/terminal-smoke.mjs"
+  },
+  "dependencies": {
+    "ssh2": "1.17.0"
   }
 }

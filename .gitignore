@@ -16,6 +16,7 @@ rclone.conf
 
 # 挂载时记录的 SSH 主机公钥（含真实主机地址）
 known_hosts
+.srb-mounts/
 
 # 日志（挂载测试日志含完整 net use 命令行，即含密码）
 *.log
@@ -24,6 +25,8 @@ known_hosts
 #  第三方二进制与构建产物 —— 不进库，走 Release 附件
 # ============================================================
 node_modules/
+runtime/
+bin/plink.exe
 
 # 分发包（含 node.exe 84MB / rclone.exe 82MB / MSI 安装包）
 dist/

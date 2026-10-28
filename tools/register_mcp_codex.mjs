@@ -1,117 +1,78 @@
 #!/usr/bin/env node
-/**
- * tools/register_mcp_codex.mjs — 把 ssh-remote-bridge 注册进 Codex (~/.codex/config.toml)
- *
- * 为什么不手写 TOML 片段: TOML 里反斜杠和引号的转义规则很容易写错,
- * 而 codex 有官方 CLI (`codex mcp add`), 格式最稳。
- * 所以策略是:
- *   1) codex 在 PATH 上  -> 直接调 `codex mcp add`（推荐, 最稳）
- *   2) 没有 CLI          -> 兜底直接改 config.toml（用 TOML 字符串字面量,
- *                           单引号形式在 TOML 里不做转义, 反斜杠原样保留）
- *
- * node.exe 选择: 优先包内 runtime\node.exe（分发包自带 Node, 免安装）,
- * 找不到则退回系统 node（开发目录没有 runtime\）—— 两种布局都能注册。
- *
- * 幂等: 重复执行会先删掉旧的 [mcp_servers.ssh-remote-bridge] 段再追加。
- *
- * 环境变量:
- *   SRB_CODEX_CONFIG_DIR  直接指定 config.toml 所在目录（即 .../.codex）
- *   SRB_USERPROFILE_OVERRIDE  覆盖家目录（测试隔离用，等价于换 HOME）
- *   CODEX_CLI      强制指定 codex 可执行文件路径
- */
-import { spawnSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const NAME='ssh-remote-bridge';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SERVER_MJS = path.join(ROOT, 'mcp', 'server.mjs');
-const NAME = 'ssh-remote-bridge';
-
-/** 选 node.exe: 包内 runtime 优先（分发包自带）, 否则系统 node */
-function pickNode() {
-  const bundled = path.join(ROOT, 'runtime', 'node.exe');
-  if (fs.existsSync(bundled)) return bundled;
-  if (process.execPath && fs.existsSync(process.execPath)) return process.execPath;
-  return 'node.exe';
-}
-const NODE_EXE = pickNode();
-
-// ---- 自检（只查必须有的一样）----
-if (!fs.existsSync(SERVER_MJS)) {
-  console.error(`[register-codex] missing ${SERVER_MJS}`);
-  console.error('[register-codex] the package looks incomplete (mcp\\server.mjs is required)');
-  process.exit(1);
-}
-
-// ---- 找 codex CLI（Windows 上通常是 .cmd 垫片）----
-function findCodex() {
-  if (process.env.CODEX_CLI) return process.env.CODEX_CLI;
-  const probe = spawnSync('where', ['codex'], { encoding: 'utf8', windowsHide: true });
-  const first = (probe.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-  return first || null;
-}
-
-// ---- 路径 -> TOML 字符串 ----
-// 优先用单引号字面量 ('...'), TOML 里它不做转义, 反斜杠原样保留, 最不容易出错。
-// 只有路径里含单引号时才退回双引号形式(此时才需要转义)。
-function tomlStr(s) {
-  if (!s.includes("'")) return `'${s}'`;
-  return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-}
-
-function registerViaCli(codexExe) {
-  console.log(`[register-codex] codex CLI found: ${codexExe}`);
-  const rm = spawnSync(codexExe, ['mcp', 'remove', NAME], { encoding: 'utf8', windowsHide: true });
-  const add = spawnSync(codexExe, ['mcp', 'add', NAME, '--', NODE_EXE, SERVER_MJS], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  const out = `${add.stdout || ''}${add.stderr || ''}`.trim();
-  if (add.status === 0) {
-    console.log('[register-codex] registered via `codex mcp add`');
-    if (out) console.log(`  ${out.split(/\r?\n/).join('\n  ')}`);
-    return true;
+// Scan strings/comments so a header-looking line inside a multiline value is data.
+export function updateToml(text,node,server) {
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/), headers=[];
+  let quote='',triple=false,depth=0;
+  const neutral=[];
+  for(let n=0;n<lines.length;n++) {
+    const line=lines[n];neutral[n]=!quote && !depth;
+    if(neutral[n] && /^\s*\[/.test(line)) {headers.push({n,line:line.trim().replace(/\s*#.*$/,'')});continue;}
+    for(let i=0;i<line.length;i++) {
+      const c=line[i];
+      if(quote) {
+        if(quote==='"' && c==='\\') {i++;continue;}
+        if(c===quote && (!triple || line.slice(i,i+3)===quote.repeat(3))) {if(triple)i+=2;quote='';triple=false;}
+      } else if(c==='#') break;
+      else if(c==='"' || c==="'") {quote=c;triple=line.slice(i,i+3)===c.repeat(3);if(triple)i+=2;}
+      else if(c==='[' || c==='{') depth++;
+      else if(c===']' || c==='}') depth--;
+    }
+    if(quote && !triple) throw new Error('invalid TOML string; existing configuration was kept');
+    if(depth<0) throw new Error('invalid TOML brackets; existing configuration was kept');
   }
-  console.warn(`[register-codex] \`codex mcp add\` exited ${add.status}: ${out.split(/\r?\n/)[0] || '(no output)'}`);
-  return false;
-}
-
-function registerViaToml() {
-  // 配置目录定位优先级:
-  //   SRB_CODEX_CONFIG_DIR  —— 直接给 .../.codex 这一层（最明确，推荐测试隔离用）
-  //   SRB_USERPROFILE_OVERRIDE —— 换家目录，等价于改 HOME
-  //   默认                   —— os.homedir()/.codex
-  const cfgDir = process.env.SRB_CODEX_CONFIG_DIR
-    || path.join(process.env.SRB_USERPROFILE_OVERRIDE || os.homedir(), '.codex');
-  const cfg = path.join(cfgDir, 'config.toml');
-  if (!fs.existsSync(cfg)) {
-    console.error(`[register-codex] cannot find ${cfg} and codex CLI is not on PATH.`);
-    console.error('[register-codex] Install codex (npm i -g @openai/codex) or create the config, then retry.');
-    return false;
+  if(quote || depth) throw new Error('unfinished TOML value; existing configuration was kept');
+  const base=/^\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:ssh-remote-bridge|"ssh-remote-bridge"|'ssh-remote-bridge')\s*\]$/;
+  const matching=headers.filter(h=>base.test(h.line));
+  if(matching.length>1) throw new Error('duplicate bridge sections; repair configuration before registering');
+  const values={command:JSON.stringify(node),args:JSON.stringify([server])};
+  if(!matching.length) {
+    if(lines.some((line,n)=>neutral[n] && /^\s*(?:mcp_servers|"mcp_servers"|'mcp_servers'|ssh-remote-bridge|"ssh-remote-bridge"|'ssh-remote-bridge')\s*=/.test(line))) throw new Error('inline MCP tables are unsupported; existing configuration was kept');
+    return text.trimEnd()+'\n\n[mcp_servers.'+NAME+']\ncommand = '+values.command+'\nargs = '+values.args+'\nstartup_timeout_sec = 120\n';
   }
-  const sectRe = new RegExp(`\\n\\[mcp_servers\\.${NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\][\\s\\S]*?(?=\\n\\[|$)`);
-  let s = fs.readFileSync(cfg, 'utf8');
-  s = s.replace(sectRe, '').trimEnd();
-
-  const block =
-    `\n\n[mcp_servers.${NAME}]\n` +
-    `command = ${tomlStr(NODE_EXE)}\n` +
-    `args = [${tomlStr(SERVER_MJS)}]\n` +
-    `startup_timeout_sec = 120\n`;
-  fs.writeFileSync(cfg, s + block, 'utf8');
-  console.log(`[register-codex] appended [mcp_servers.${NAME}] to ${cfg}`);
-  console.log(`  command = ${tomlStr(NODE_EXE)}`);
-  console.log(`  args    = [${tomlStr(SERVER_MJS)}]`);
-  return true;
+  const start=matching[0].n, end=headers.find(h=>h.n>start)?.n??lines.length, edits=[];
+  for(let n=start+1;n<end;n++) {
+    if(!neutral[n]) continue;
+    const m=/^\s*(?:([A-Za-z_][\w-]*)|"([A-Za-z_][\w-]*)"|'([A-Za-z_][\w-]*)')\s*=/.exec(lines[n]);
+    if(!m) continue;
+    m[1]=m[1]||m[2]||m[3];
+    if(['url','transport'].includes(m[1])) throw new Error('existing bridge entry uses a different transport; configuration was kept');
+    if(!Object.hasOwn(values,m[1])) continue;
+    let next=n+1;while(next<end && !neutral[next])next++;
+    if(edits.some(e=>e.key===m[1])) throw new Error('duplicate '+m[1]+' in bridge section');
+    edits.push({start:n,end:next,key:m[1],text:m[1]+' = '+values[m[1]]});
+  }
+  const missing=Object.keys(values).filter(k=>!edits.some(e=>e.key===k));
+  for(const e of edits.reverse()) lines.splice(e.start,e.end-e.start,e.text);
+  lines.splice(start+1,0,...missing.map(k=>k+' = '+values[k]));
+  return lines.join('\n');
 }
-
-const codexExe = findCodex();
-const ok = (codexExe && registerViaCli(codexExe)) || registerViaToml();
-if (!ok) process.exit(1);
-
-console.log('');
-console.log(`[register-codex] MCP servers configured: ${NAME}`);
-console.log('[register-codex] NEXT: restart Codex (config.toml is only read at startup).');
-console.log('[register-codex] verify with:  codex mcp list');
+export function register() {
+  const cfgDir=process.env.SRB_CODEX_CONFIG_DIR || process.env.CODEX_HOME || path.join(process.env.SRB_USERPROFILE_OVERRIDE||os.homedir(),'.codex');
+  const cfg=path.join(cfgDir,'config.toml'), server=path.join(ROOT,'mcp','server.mjs');
+  if(!fs.existsSync(server)) throw new Error('mcp/server.mjs is missing');
+  const bundled=path.join(ROOT,'runtime','node.exe'), node=fs.existsSync(bundled)?bundled:process.execPath;
+  const before=fs.existsSync(cfg)?fs.readFileSync(cfg,'utf8'):'';
+  const after=updateToml(before,node,server);
+  fs.mkdirSync(cfgDir,{recursive:true});
+  const tmp=cfg+'.'+crypto.randomBytes(8).toString('hex')+'.tmp';
+  try {
+    fs.writeFileSync(tmp,after,{flag:'wx',mode:0o600});
+    if(fs.existsSync(cfg)) {
+      if(fs.readFileSync(cfg,'utf8')!==before) throw new Error('configuration changed during registration; retry');
+      fs.copyFileSync(cfg,cfg+'.srb-backup-'+Date.now());
+    }
+    fs.renameSync(tmp,cfg);
+  } finally {try{fs.unlinkSync(tmp);}catch{}}
+  console.log('[register-codex] bridge command updated; existing env/options preserved. Restart Codex to reload.');
+}
+if(process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url) {
+  try {register();} catch(e) {console.error('[register-codex] '+e.message);process.exitCode=1;}
+}

@@ -1,0 +1,10 @@
+--- a/sshfs.c
++++ b/sshfs.c
+@@ -1423,0 +1424 @@
++	pthread_cond_destroy(&chunk->sio.finished);
+@@ -2812,0 +2814 @@
++		pthread_cond_destroy(&sf->write_finished);
+@@ -2897,0 +2900 @@
++	pthread_cond_destroy(&sf->write_finished);
+@@ -3269,0 +3273 @@
++	pthread_cond_destroy(&sio.finished);
