@@ -6,7 +6,7 @@
 
 Mount server directories as Windows drives for Agent file tools, and reuse SSH connections for server commands. The CLI provides a native Linux terminal; MCP provides incremental task output and cancellation.
 
-This machine's source, configuration and recovery scripts live at `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd`. They remain accessible when the mount fails. Use the actual installation directory after moving the project.
+Keep this project on a local Windows disk so recovery scripts remain accessible when a remote mount fails. Run the commands below from the project root, substituting your own paths and server profiles.
 
 ## 1. Agent workflow
 
@@ -84,7 +84,7 @@ Completed results expire after 10 minutes, disconnection/reload or eviction: up 
 
 ## 3. Local recovery and drive cleanup
 
-Run these commands in **Windows**, with the local project as `workdir`, even when a remote workspace is unavailable. This machine requires the `rtk proxy` prefix; omit it on hosts without RTK.
+Run these commands in **Windows**, with the local project as `workdir`, even when a remote workspace is unavailable. The `rtk proxy` prefix is optional; omit it on hosts without RTK.
 
 ```powershell
 rtk proxy .\runtime\node.exe .\remote-shell.mjs list
@@ -146,7 +146,7 @@ rtk proxy node .\tools\install_sshfs_runtime.mjs
 
 **Fresh clone / Agent installation requirement:** The base runtime installer only prepares dependencies; it does not complete deployment. Follow [the build and repair guide](BUILD-SSHFS.md) to build, validate and activate 3.7.2+srb.1 before mounting. Verify the executable actually selected, including any SRB_SSHFS override or system installation. Do not treat official unpatched 3.7.2, which has the known handle leak, as the final installation. If the toolchain is missing or the build fails, report the blocker rather than silently falling back to the unpatched version. Neither Git clone nor the base installer automatically builds the repair.
 
-The installer verifies sizes/hashes, records provenance, and does not compile binaries or overwrite an existing runtime. `--stage` prepares `runtime/sshfs-next/`. To switch runtimes, save work, unmount affected mappings, back up the old runtime, move the staged directory into place and remount. Executable priority is `SRB_SSHFS` → private runtime → system SSHFS-Win. The base installer still provides official SSHFS 3.7.2. The user-authorized source repair **3.7.2+srb.1** is active in `runtime/sshfs/` and M: was remounted on 2026-10-28. The live mount stayed at 304 handles over 300 repeated reads. Future rebuilds are staged separately and require saving work before switching. See [the build and repair guide](BUILD-SSHFS.md) for source, hashes, toolchain and switching instructions.
+The installer verifies sizes/hashes, records provenance, and does not compile binaries or overwrite an existing runtime. `--stage` prepares `runtime/sshfs-next/`. To switch runtimes, save work, unmount affected mappings, back up the old runtime, move the staged directory into place and remount. Executable priority is `SRB_SSHFS` → private runtime → system SSHFS-Win. The base installer still provides official SSHFS 3.7.2. This project supplies the source patch and build script for **3.7.2+srb.1**; build and activate it in `runtime/sshfs/` before mounting. The repaired binary is not included in the source repository. See [the build and repair guide](BUILD-SSHFS.md) for source, hashes, toolchain and switching instructions.
 
 Official distribution sources: [Node.js](https://nodejs.org/en/download), [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html), [WinFsp](https://winfsp.dev), [Cygwin](https://cygwin.com/packages/), [7-Zip](https://7-zip.org/download.html).
 
@@ -158,14 +158,14 @@ Copy `servers.example.json` to `servers.json` for manual setup, or call `configu
 
 Environment overrides: `SRB_CONFIG`, `SRB_PLINK`, `SRB_SSHFS`, `SRB_KNOWN_HOSTS`; Codex registration uses `SRB_CODEX_CONFIG_DIR`, otherwise `CODEX_HOME` or the default user directory. `SRB_KNOWN_HOSTS` must still contain the pinned key.
 
-### Tools deployed on this machine
+### Validated component versions
 
 | Component | Version/location |
 |---|---|
 | Node.js / npm | 26.12.0 Current / 11.20.0; `runtime/` |
 | Plink | 0.85; `bin/plink.exe` |
 | 7-Zip | 26.04; `runtime/7zip/` |
-| SSHFS | Active: 3.7.2+srb.1 condition-variable repair; `runtime/sshfs/` |
+| SSHFS | 3.7.2+srb.1 condition-variable repair; build and activate in `runtime/sshfs/` |
 | Cygwin and console helper | 3.6.11; `runtime/sshfs/bin/` |
 | OpenSSH / OpenSSL | 10.5p1 / 3.5.9; official Cygwin runtime binaries |
 | WinFsp / ssh2 / rclone | 2.1 / 1.17.0 / 1.75.2 |

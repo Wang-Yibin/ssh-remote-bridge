@@ -2,15 +2,11 @@
 
 ## 当前状态与操作入口
 
-修复版为 **SSHFS 3.7.2+srb.1**，基于官方 3.7.2 源码，只增加四处条件变量销毁调用及版本标记。已于 2026-10-28 切换到 `runtime/sshfs/`，M: 已重新挂载生效。实际 M: 连续读取 300 次，句柄保持 304、Event 保持 96、Semaphore 保持 9，服务器端内容核对通过。旧运行库备份为 `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd\runtime\sshfs-backup-handlefix-20261028-4476dc6081dd`。后续重新构建仍输出到 `runtime/sshfs-next/`，需要另行保存文件并切换。
+修复版为 **SSHFS 3.7.2+srb.1**，基于官方 3.7.2 源码，只增加四处条件变量销毁调用及版本标记。构建输出到 runtime/sshfs-next/；验证通过后，将旧运行库保留到唯一备份目录，再将修复版启用到 runtime/sshfs/ 并重新挂载。克隆仓库不会自动完成构建或启用。
 
 构建脚本：[tools/build_sshfs_handle_fix.mjs](tools/build_sshfs_handle_fix.mjs)。源码补丁：[tools/sshfs-condition-lifetimes.patch](tools/sshfs-condition-lifetimes.patch)。官方包安装器 `tools/install_sshfs_runtime.mjs` 仍用于准备未修改的基础运行库，不会自动应用本修复。
 
-本次构建环境位于：
-
-`C:\Users\riftRunnist\.codex\visualizations\2026\10\15\01a13db8-65b6-7d02-a306-7fd9580ca178\sshfs-handles-20261028\build-env\root`
-
-构建与验证证据保存在该 `sshfs-handles-20261028` 目录中。工具链是独立的 Cygwin，安装器来自官方站点并通过 GPG 签名验证。工具链版本为 GCC 14.4.0、Cygwin 3.6.12、Meson 1.10.2、Ninja 1.13.2、cygfuse 3.2、GLib 2.90.1；产物已验证可配合原有运行库依赖启动。
+构建环境使用独立的 Cygwin，根目录由用户自行选择。请从官方站点获取安装器并验证签名。已验证的工具链版本为 GCC 14.4.0、Cygwin 3.6.12、Meson 1.10.2、Ninja 1.13.2、cygfuse 3.2、GLib 2.90.1；产物已验证可配合原有运行库依赖启动。
 
 ## 如何重新构建
 
@@ -36,7 +32,7 @@ rtk proxy .\runtime\node.exe .\tools\build_sshfs_handle_fix.mjs '<独立 Cygwin 
 
 ## 临时盘符验证与切换
 
-验证使用唯一的远端临时目录和空闲盘符，避免与 M: 共用同一 UNC 挂载前缀。普通模式和 `sshfs_sync` 模式均测试重复读、打开关闭、失败打开、写入读回、512 次并发读及已存在目录的递归 mkdir。第一轮修复版在重复读取后稳定于约 306–309 个句柄；测试后的临时挂载和文件均清理。最终暂存产物的原始记录见上述证据目录。
+验证时使用唯一的远端临时目录和空闲盘符，避免与活动挂载共用同一 UNC 挂载前缀。普通模式和 sshfs_sync 模式均应测试重复读、打开关闭、失败打开、写入读回、并发读及已存在目录的递归 mkdir，并在测试后清理临时挂载和文件。2026-10-28 验证中，修复版活动挂载连续读取 300 次，句柄保持 304、Event 保持 96、Semaphore 保持 9，服务器端内容核对通过；这些计数是测试结果，并非其他环境的固定值。
 
 切换步骤：保存文件并暂停使用相关盘符的 Agent/程序 → 从本机项目目录卸载受影响的 profile → 将 `runtime/sshfs` 更名为唯一备份目录 → 将 `runtime/sshfs-next` 更名为 `runtime/sshfs` → 按原 profile 重新挂载 → 用唯一临时文件核对读写和句柄趋势。切换会使已有文件句柄失效，因此需要先保存和暂停写入。切换失败时保留新旧运行库，恢复旧目录后重新挂载，不删除用户服务器文件。
 

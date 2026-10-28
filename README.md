@@ -4,7 +4,7 @@
 
 将服务器目录挂载为本机盘符，供 Agent 使用宿主工具读写；通过持久 SSH 执行服务器命令。CLI 支持原生交互终端，MCP 支持任务增量输出和取消。
 
-**本机项目目录：** `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd`。源码、恢复脚本和 `servers.json` 都在这里，挂载失效时仍可访问。换机器或移动项目后，以实际目录为准。
+将本项目保存在 Windows 本地磁盘上，确保远端挂载失效时仍能运行恢复脚本。下文命令均从项目根目录执行，路径和服务器 profile 请按实际配置替换。
 
 ## 目录
 
@@ -143,14 +143,14 @@ SSH 文件后备接口说明：
 
 ## 3. 本机挂载与会话外恢复
 
-恢复入口放在本机项目目录，不需要先打开远端项目或建立 MCP 会话。当前 profile `5090` 使用 `M:`；操作其他服务器时替换 profile 名。
+恢复入口放在本机项目目录，不需要先打开远端项目或建立 MCP 会话。以下以 profile `5090`、盘符 `M:` 为例，请替换为自己的配置。
 
 **Agent 执行时，将宿主命令工具的 `workdir` 显式设置为本机项目目录。** 失效的 `M:\` 或 `\\sshfs.r\…` 工作目录可能导致命令根本无法启动；仅在命令内部写 `Set-Location` 无法补救启动失败。
 
-以下为 PowerShell 示例，每项按需单独执行。本机要求使用 `rtk proxy`；其他环境未安装 RTK 时可去掉前缀。
+以下为 PowerShell 示例，每项按需单独执行。`rtk proxy` 是可选的命令前缀，未安装 RTK 时可去掉。
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd'
+Set-Location -LiteralPath '<项目根目录>'
 
 # 查看状态
 rtk proxy .\runtime\node.exe .\remote-shell.mjs list
@@ -168,7 +168,7 @@ rtk proxy .\runtime\node.exe .\tools\restore_all.mjs --check
 rtk proxy .\runtime\node.exe .\remote-shell.mjs umount 5090
 ```
 
-用户也可直接运行本机脚本，下面路径均相对于本手册顶部的项目目录：
+用户也可直接运行本机脚本，下面路径均相对于项目根目录：
 
 | 脚本位置 | 操作 |
 |---|---|
@@ -199,7 +199,7 @@ rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs --apply Y: Z:
 
 卸载或更换运行库前保存文件、暂停其他 Agent 写入；已有文件句柄会失效。只处理确认归属的映射，不覆盖其他盘符，不杀无关进程，不自动提权，不无限重试。无法释放的卷按错误处理，必要时重启 Windows 后从本机恢复。
 
-新会话可引用：**“读取 `C:\Users\riftRunnist\WorkBuddy\2026-10-14-19-00-39\fwd\README.md`，按挂载恢复章节恢复 5090。”** 若远端项目会话打不开，从本机目录或无项目会话执行。
+新会话可引用：**“读取 `<项目根目录>\README.md`，按挂载恢复章节恢复 `<profile>`。”** 请将占位符替换为实际路径和配置名。若远端项目会话打不开，从本机目录或无项目会话执行。
 
 ## 4. ssh-remote 命令行
 
@@ -259,7 +259,7 @@ rtk proxy node .\tools\install_sshfs_runtime.mjs
 
 **首次克隆 / Agent 安装要求：** 基础运行库安装器只准备构建所需依赖，安装完成不代表可直接挂载。首次部署必须继续按 [SSHFS 构建与修复手册](BUILD-SSHFS.md) 构建、验证并启用 3.7.2+srb.1；确认实际选中的 SSHFS 为修复版后再挂载。不要把已知存在句柄泄漏的官方 3.7.2 原版作为最终安装结果。SRB_SSHFS 或系统安装可能覆盖版本选择，必须检查实际使用的程序。若工具链缺失或构建失败，应报告阻塞，不能静默退回原版。Git 克隆和基础安装脚本都不会自动完成修复版构建。
 
-**句柄泄漏修复版：** `3.7.2+srb.1` 已于 2026-10-28 切换至 `runtime/sshfs/`，M: 已重新挂载生效；连续读取 300 次，句柄保持 304。该版本来自用户授权的源码构建；基础运行库安装器仍提供官方原版，不能替代这一步。构建环境、复现结果、源码补丁和切换步骤见 [SSHFS 构建与修复手册](BUILD-SSHFS.md)。
+**句柄泄漏修复版：** 本项目提供 `3.7.2+srb.1` 的源码补丁和构建脚本，需构建后启用到 `runtime/sshfs/` 并重新挂载。修复版二进制不随源码仓库分发；基础安装器仍提供官方原版，不能替代构建步骤。构建环境、验证结果和切换步骤见 [SSHFS 构建与修复手册](BUILD-SSHFS.md)。
 
 ### 5.2 注册 MCP
 
@@ -311,7 +311,7 @@ rtk proxy node .\tools\install_sshfs_runtime.mjs
 | Node.js / npm | 26.12.0 Current 正式版 / 11.20.0；`runtime/` |
 | Plink | 0.85；`bin/plink.exe` |
 | 7-Zip | 26.04；`runtime/7zip/` |
-| SSHFS | 3.7.2+srb.1；`runtime/sshfs/`，已启用四处条件变量销毁修复 |
+| SSHFS | 3.7.2+srb.1；需构建并启用到 `runtime/sshfs/`，包含四处条件变量销毁修复 |
 | Cygwin / 控制台辅助组件 | 3.6.11；包含 `runtime/sshfs/bin/cygwin-console-helper.exe`，挂载运行库必需 |
 | OpenSSH / OpenSSL | 10.5p1 / 3.5.9；独立 SSHFS 运行库中的官方 Cygwin 二进制 |
 | WinFsp / ssh2 / rclone | 2.1 / 1.17.0 / 1.75.2 |
