@@ -207,7 +207,7 @@ rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs --apply Y: Z:
 
 | 命令 | 功能 |
 |---|---|
-| `ssh-remote [profile]` | 打开原生 Linux PTY；省略 profile 使用默认服务器 |
+| `ssh-remote [profile]` | 打开原生 Linux PTY；省略 profile 时，多服务器先按编号选择，单服务器直接连接 |
 | `ssh-remote list` | 查看所有 profile 和挂载状态 |
 | `ssh-remote setup [profile]` | 挂载盘符及可选目录链接 |
 | `ssh-remote umount [profile]` | 卸载；也支持 `unmount` 别名 |
@@ -217,6 +217,8 @@ rtk proxy .\runtime\node.exe .\tools\cleanup_stale_mounts.mjs --apply Y: Z:
 | `ssh-remote rclone [profile]` | 用户主动选择的备用 SFTP 挂载方式 |
 | `ssh-remote [profile] --framed` | 旧逐行兼容模式；管道输入也使用此模式 |
 | `ssh-remote help` | 查看帮助 |
+
+选择服务器时输入编号，Ctrl+C 或 Ctrl+D 取消；即使设置了默认服务器，多服务器时也不会跳过选择。显式指定 `ssh-remote <profile>` 会直接连接。管道模式下配置了多个服务器时，必须显式指定 profile；管理子命令的默认服务器行为保持不变。
 
 原生终端中，Tab 补全、方向键、Ctrl+C、颜色和窗口尺寸由远端 Bash/PTY 处理；支持服务器已加载的 bash-completion。可直接运行 `htop`、`nvitop`、`gpustat -i 1`；退出使用 `exit` / Ctrl+D。终端会话保留目录和环境，挂载内启动目录会映射到对应远端位置。
 

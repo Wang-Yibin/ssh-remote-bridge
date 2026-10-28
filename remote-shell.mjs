@@ -3,7 +3,7 @@
  * remote-shell.mjs — ssh-remote CLI (多服务器)
  *
  * 用法:
- *   ssh-remote                      交互 shell (默认服务器)
+ *   ssh-remote                      交互 shell (多服务器时先选择)
  *   ssh-remote <profile>            交互 shell (指定服务器, 如 ssh-remote 5090)
  *   ssh-remote list                 列出所有服务器及挂载状态
  *   ssh-remote setup [profile]      挂载: 校验主机指纹的后台 SSHFS + 可选目录链接
@@ -79,6 +79,7 @@ function isSelfClearing(line) {
 function printHelp(srv) {
   console.log([
     'ssh-remote [profile]                 native Linux PTY shell (real terminal required)',
+    '  Without a profile: choose a server when multiple are configured.',
     '  Tab: remote Bash completion; Ctrl+C: interrupt; exit/Ctrl+D: leave',
     '  htop / nvitop / gpustat -i: native screen refresh, colours and keyboard',
     'ssh-remote [profile] --framed        legacy line-based shell (also used for pipes)',
@@ -335,6 +336,35 @@ async function runShell(srv) {
 
 // ---------------------------------------------------------------- 入口
 
+async function chooseShellServer(profile) {
+  if(profile)return engine.getServer(profile);
+  const servers=engine.listServers();
+  if(servers.length===1)return servers[0];
+  if(!process.stdin.isTTY || !process.stdout.isTTY)throw new Error('multiple servers configured; specify a profile: ssh-remote <profile>');
+  console.log('Select a server:');
+  servers.forEach((s,i)=>console.log(`  ${i+1}) ${s.name}  ${s.user}@${s.host}:${s.port}`));
+  const rl=readline.createInterface({input:process.stdin,output:process.stdout,terminal:true});
+  const input=rl[Symbol.asyncIterator]();
+  let cancelled=false;
+  const cancel=()=>{cancelled=true;process.exitCode=130;rl.close();};
+  const signals=['SIGINT','SIGTERM','SIGHUP'];
+  rl.on('SIGINT',cancel);
+  for(const signal of signals)process.on(signal,cancel);
+  try {
+    rl.setPrompt(`Server number (1-${servers.length}, Ctrl+C to cancel): `);rl.prompt();
+    for await(const line of input) {
+      if(cancelled)return null;
+      const choice=line.trim();
+      if(/^[1-9]\d*$/.test(choice) && Number(choice)<=servers.length)return servers[Number(choice)-1];
+      console.log(`Enter a number from 1 to ${servers.length}.`);rl.prompt();
+    }
+    return null;
+  } finally {
+    rl.close();rl.removeListener('SIGINT',cancel);
+    for(const signal of signals)process.removeListener(signal,cancel);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const first = argv[0];
@@ -383,12 +413,13 @@ async function main() {
   const profile=profiles[0]||null;
   let srv;
   try {
-    srv = engine.getServer(profile);
+    srv = await chooseShellServer(profile);
   } catch (e) {
     console.error(`[ssh-remote] ${e.message}`);
     console.error('[ssh-remote] run "ssh-remote list" to see configured servers, or "ssh-remote help"');
     process.exitCode=1;return;
   }
+  if(!srv)return;
   if(process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--framed')) {
     console.log(`[ssh-remote] ${srv.name}: Linux PTY shell; Tab, Ctrl+C, colours and window resize are handled by the remote terminal.`);
     process.exitCode=await runPtyTerminal(srv,{cwd:engine.localToRemote(srv,process.cwd())||srv.remote});

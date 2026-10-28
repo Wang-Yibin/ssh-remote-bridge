@@ -115,6 +115,8 @@ When a mapping is already absent but Explorer still shows a disconnected drive, 
 
 ## 4. CLI terminal
 
+Run `ssh-remote` without a profile to choose a server by number when multiple servers are configured; a single configured server connects directly. Ctrl+C or Ctrl+D cancels selection. With piped input/output and multiple servers, specify a profile explicitly. An explicit `ssh-remote <profile>` connects directly; management commands retain their default-profile behavior.
+
 ```powershell
 ssh-remote 5090
 ssh-remote gpu -w 5090

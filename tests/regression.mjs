@@ -263,6 +263,39 @@ test('CLI rejects ignored legacy/unknown options before opening a connection',as
  await assert.rejects(ns.main(),/usage:/);
 });
 
+test('CLI chooses among multiple servers before connecting and cleans up selection input',async()=>{
+ const servers=[{...seed,name:'one',default:true},{...seed,name:'two'}];
+ for(const scenario of [
+  {answers:['','0','2x','99','2'],expected:'two',prompts:5},
+  {answers:['1'],expected:'one',prompts:1},
+  {argv:['two'],expected:'two',prompts:0},
+  {single:true,expected:'one',prompts:0},
+  {answers:[],prompts:1},
+  {signal:'SIGINT',answers:['2'],prompts:1,exit:130},
+  {signal:'SIGTERM',answers:['2'],prompts:1,exit:130},
+  {pipe:true,prompts:0,exit:1},
+ ]) {
+  let selected,closed=false,prompts=0,created=0,listed=0,proc;const messages=[];
+  const rl=new EventEmitter();rl.close=()=>{closed=true;};rl.setPrompt=()=>{};rl.prompt=()=>prompts++;
+  rl[Symbol.asyncIterator]=async function*(){
+   if(scenario.signal)proc.emit(scenario.signal);
+   for(const answer of scenario.answers||[])yield answer;
+  };
+  const {ns,proc:p}=await load('remote-shell.mjs',{
+   './lib/engine.mjs':{listServers:()=>{listed++;return scenario.single?servers.slice(0,1):servers;},getServer:name=>{assert.equal(name,'two');return servers[1];},localToRemote:()=>null},
+   'node:readline':{createInterface:()=>{created++;return rl;}},
+   './lib/terminal.mjs':{runPtyTerminal:async srv=>{if(created)assert.equal(closed,true);selected=srv.name;return 0;}},
+  },{argv:[process.execPath,path.join(root,'remote-shell.mjs'),...(scenario.argv||[])],console:{log:s=>messages.push(s),error:s=>messages.push(s)}});
+  proc=p;proc.stdin={isTTY:!scenario.pipe};proc.stdout.isTTY=true;
+  await ns.main();assert.equal(selected,scenario.expected);assert.equal(prompts,scenario.prompts);
+  assert.equal(proc.exitCode,scenario.exit??(selected?0:undefined));assert.equal(listed,scenario.argv?0:1);
+  if(created){assert.equal(closed,true);assert.equal(rl.listenerCount('SIGINT'),0);}
+  for(const signal of ['SIGINT','SIGTERM','SIGHUP'])assert.equal(proc.listenerCount(signal),0);
+  assert.doesNotMatch(messages.join('\n'),/FAKE_ONLY/);
+  if(scenario.pipe)assert.match(messages.join('\n'),/specify a profile/);
+ }
+});
+
 test('CLI reexecutes the private Node without a shell, preserving arguments and exit status',async()=>{
  let called;
  const argv=['C:\\old\\node.exe',path.join(root,'remote-shell.mjs'),'exec','one','printf','argument with spaces','-f'];
