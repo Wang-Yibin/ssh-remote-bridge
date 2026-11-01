@@ -330,16 +330,16 @@ test('SSHFS selects explicit override, then private fixed runtime, then installe
  assert.equal(ns.sshfsExecutable(),'D:\\custom\\sshfs.exe');
 });
 
-test('SSHFS rejects old/unknown runtimes before SSH but accepts the upstream mkdir fix',async()=>{
+test('SSHFS requires the verified Windows reliability build before connecting',async()=>{
  save({one:{...seed,drive:'Z:'}});
- for(const [version,status,accepted] of [['3.5.2',0,false],['3.7.1',0,false],['3.7.2',0,true],['3.8.0',0,true],['4.0.0',0,true],['unrecognized',0,false],['3.7.2',1,false]]){
+ for(const [version,status,accepted] of [['3.5.2',0,false],['3.7.2',0,false],['3.7.6',0,false],['3.8.0',0,false],['4.0.0',0,false],['3.7.6+srb.2',0,true],['unrecognized',0,false],['3.7.6+srb.2',1,false]]){
   let remote=0;
   const spawn=(file,args)=>{const p=child();queueMicrotask(()=>{p.stdout.emit('data',Buffer.from(args[0]==='--version'?'SSHFS version '+version:JSON.stringify({exists:false,target:''})));p.emit('close',args[0]==='--version'?status:0);});return p;};
   const {ns}=await load('lib/engine.mjs',{'./persist.mjs':fakePersist(async()=>{remote++;throw new Error('past runtime gate');}),'node:child_process':{spawn,spawnSync:noProcess}},{env:{SRB_SSHFS:process.execPath}});
   const result=await ns.mountServer(ns.getServer('one'));
   assert.equal(result.ok,false);
   if(accepted){assert.equal(remote,1);assert.match(result.error,/past runtime gate/);}
-  else{assert.equal(remote,0);assert.match(result.error,/SSHFS >= 3\.7\.2/);}
+  else{assert.equal(remote,0);assert.match(result.error,/SSHFS 3\.7\.6\+srb\.2/);}
  }
 });
 
@@ -381,8 +381,8 @@ test('MCP initialize advertises local files/light compute and remote heavy work 
  assert.match(result.instructions,/host-local tools for small-file parsing/);
  assert.match(result.instructions,/Run tests, builds, large data analysis, training/);
  assert.match(result.instructions,/After any write failure, inspect/);
- assert.match(result.instructions,/New mounts require SSHFS >=3\.7\.2/);
- assert.match(result.instructions,/requires remounting existing volumes/);
+ assert.match(result.instructions,/New mounts require the project build SSHFS 3\.7\.6\+srb\.2/);
+ assert.match(result.instructions,/Runtime upgrades require remounting existing volumes/);
  assert.match(result.instructions,/Report raw host-tool errors/);
  await ns.handleMessage({id:2,method:'tools/list'});
  const listed=JSON.parse(output().stdout.trim().split('\n')[1]).result.tools;

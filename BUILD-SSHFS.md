@@ -1,41 +1,27 @@
-# SSHFS 条件变量句柄泄漏修复
+# SSHFS Windows 传输修复手册
 
-## 当前状态与操作入口
+## 当前版本
 
-修复版为 **SSHFS 3.7.2+srb.1**，基于官方 3.7.2 源码，只增加四处条件变量销毁调用及版本标记。构建输出到 runtime/sshfs-next/；验证通过后，将旧运行库保留到唯一备份目录，再将修复版启用到 runtime/sshfs/ 并重新挂载。克隆仓库不会自动完成构建或启用。
+项目要求 **SSHFS 3.7.6+srb.2**。它基于官方稳定版 3.7.6，包含 Cygwin/WinFsp 集成、四处条件变量销毁修复，以及改为逐段完整写入 SFTP 管道并对 EINTR 重试的 Windows 写入路径。
 
-构建脚本：[tools/build_sshfs_handle_fix.mjs](tools/build_sshfs_handle_fix.mjs)。源码补丁：[tools/sshfs-condition-lifetimes.patch](tools/sshfs-condition-lifetimes.patch)。官方包安装器 `tools/install_sshfs_runtime.mjs` 仍用于准备未修改的基础运行库，不会自动应用本修复。
+问题复现时，SSHFS 发出 SFTP WRITE 后没有收到或处理对应应答；复制操作卡住，远端 PDF 大小看似正确，但其中一个 32 KiB 区块全为零。官方 3.7.6 单独升级仍能复现。隔离盘符上的 3.7.6+srb.2 连续 10 次 Windows Shell 复制均完成，远端 SHA-256 与源文件相同；另 10 次无诊断日志 Shell 复制也全部通过。测试样本有限，不能保证所有网络与服务器场景。
 
-构建环境使用独立的 Cygwin，根目录由用户自行选择。请从官方站点获取安装器并验证签名。已验证的工具链版本为 GCC 14.4.0、Cygwin 3.6.12、Meson 1.10.2、Ninja 1.13.2、cygfuse 3.2、GLib 2.90.1；产物已验证可配合原有运行库依赖启动。
+## 构建
 
-## 如何重新构建
+在 Windows x64 本机准备独立 Cygwin 根目录，安装 gcc-core、meson、ninja、tar、patch、pkg-config、cygfuse 和 libglib2.0-devel。源码下载使用项目内置 7-Zip 解压，Linux 服务器无需安装编译器。
 
-Windows x64 本机需要独立 Cygwin 根目录，其中安装 `gcc-core`、`meson`、`ninja`、`patch`、`pkg-config`、`cygfuse`、`libglib2.0-devel`。目标是 Windows/Cygwin 程序，所以本次在本机构建。无需更新 Linux 服务器软件。
+在项目目录运行：
 
-在本机项目目录执行：
+    rtk proxy .\runtime\node.exe .\tools\build_sshfs_handle_fix.mjs '<独立 Cygwin 根目录>'
 
-```powershell
-rtk proxy .\runtime\node.exe .\tools\build_sshfs_handle_fix.mjs '<独立 Cygwin 根目录>'
-```
+脚本校验官方源码包 SHA-256，应用 tools/sshfs-stability-fix.patch，构建并创建 runtime/sshfs-next。它不会覆盖活动运行库或卸载任何盘符。构建日志在 runtime/sshfs-reliability-build-376/build.log；来源、补丁、二进制哈希和修改后源码随暂存运行库保存在 source/ 与 provenance.json。
 
-脚本从官方版本标签下载源码并核对固定 SHA-256，应用四处补丁，通过上游 Meson/Ninja 构建，然后复制当前基础运行库并只替换 SSHFS 程序。它拒绝覆盖已存在的 `runtime/sshfs-next`，不自动卸载挂载，也不改写活动的 `runtime/sshfs`。构建缓存和日志位于 `runtime/sshfs-handle-build/`。
+克隆后必须先运行 tools/install_sshfs_runtime.mjs 准备基础依赖，再运行上述构建脚本。基础安装器提供的官方 Cygwin SSHFS 3.7.2 不是最终可挂载版本。
 
-`runtime/sshfs-next/provenance.json` 记录源码、补丁、构建产物哈希和工具链位置。完整修改后源码及补丁位于 `runtime/sshfs-next/source/`；源码保留上游 GPL 许可证。第三方程序、工具链、运行库不进入 Git/npm 源码包。
+## 隔离验证与启用
 
-## 为什么需要修复
+验证只使用空闲临时盘符及唯一远端临时目录。对 Windows Shell 复制和小文件读写执行复制后 SHA-256 对比；结束时卸载临时盘并清理临时目录。当前用户的 M:、N: 不会被构建脚本触碰。
 
-原 SSHFS 在创建文件对象、读取缓冲区和同步写入局部对象时初始化条件变量，却在释放对象时遗漏销毁。Cygwin 条件变量内部持有两个 Event 和一个 Semaphore；仅释放外层内存不能释放这些对象。当前旧程序的导入表包含 `pthread_cond_init`，不包含 `pthread_cond_destroy`，与源码相符。
+切换活动运行库前保存文件并暂停所有 Agent/程序写入。卸载受影响映射，将 runtime/sshfs 移到唯一备份名，再将 runtime/sshfs-next 改名为 runtime/sshfs，然后重新挂载。切换会使已有文件句柄失效。失败时保留两份目录，恢复旧目录并重新挂载；不要删除服务器项目文件。
 
-2026-10-28 原挂载实测：仅打开/关闭 100 次增加 300 个句柄；完整读取 100 次增加 900 个句柄，连续两批规律一致。文件句柄保持 27，增长主要为同步句柄；等待后未回落。
-
-修复位置为读取块释放、打开失败清理、正常文件释放、同步写入结束。全局条件变量的整个进程生命周期保持原样。参考 [SSHFS 3.7.2 源码](https://github.com/libfuse/sshfs/blob/sshfs-3.7.2/sshfs.c) 与 [Cygwin 同步原语实现](https://github.com/cygwin/cygwin/blob/main/winsup/cygwin/thread.cc)。
-
-## 临时盘符验证与切换
-
-验证时使用唯一的远端临时目录和空闲盘符，避免与活动挂载共用同一 UNC 挂载前缀。普通模式和 sshfs_sync 模式均应测试重复读、打开关闭、失败打开、写入读回、并发读及已存在目录的递归 mkdir，并在测试后清理临时挂载和文件。2026-10-28 验证中，修复版活动挂载连续读取 300 次，句柄保持 304、Event 保持 96、Semaphore 保持 9，服务器端内容核对通过；这些计数是测试结果，并非其他环境的固定值。
-
-切换步骤：保存文件并暂停使用相关盘符的 Agent/程序 → 从本机项目目录卸载受影响的 profile → 将 `runtime/sshfs` 更名为唯一备份目录 → 将 `runtime/sshfs-next` 更名为 `runtime/sshfs` → 按原 profile 重新挂载 → 用唯一临时文件核对读写和句柄趋势。切换会使已有文件句柄失效，因此需要先保存和暂停写入。切换失败时保留新旧运行库，恢复旧目录后重新挂载，不删除用户服务器文件。
-
-重新挂载后新进程才使用修复版；仅重载 MCP 不会替换已运行的 SSHFS 进程。后续官方版本是否包含同样修复，应核对源码和行为，不能仅按版本数字推断。
-
-短时验证已覆盖本次复现路径，尚未进行数天稳定性压测；不能据此声称解决所有 SSHFS/WinFsp 问题。
+新 SSHFS 进程启动时会检查精确版本 3.7.6+srb.2；重载 MCP 不会替换已有挂载进程。确认新挂载完成后，再对目标目录做一次唯一临时文件复制并核对哈希。

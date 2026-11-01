@@ -1,0 +1,120 @@
+--- a/sshfs.c
++++ b/sshfs.c
+@@ -1350,27 +1350,25 @@
+ 
+ static int do_write(struct conn *conn, struct iovec *iov, size_t count)
+ {
+-	int res;
+-	while (count) {
+-		res = writev(conn->wfd, iov, count);
+-		if (res == -1) {
+-			perror("write");
+-			return -1;
+-		} else if (res == 0) {
+-			fprintf(stderr, "zero write\n");
+-			return -1;
+-		}
+-		do {
+-			if ((unsigned) res < iov->iov_len) {
+-				iov->iov_len -= res;
+-				iov->iov_base += res;
+-				break;
+-			} else {
+-				res -= iov->iov_len;
+-				count --;
+-				iov ++;
++	size_t i;
++	for (i = 0; i < count; i++) {
++		const uint8_t *p = iov[i].iov_base;
++		size_t left = iov[i].iov_len;
++		while (left) {
++			ssize_t res = write(conn->wfd, p, left);
++			if (res == -1 && errno == EINTR)
++				continue;
++			if (res == -1) {
++				perror("write");
++				return -1;
++			}
++			if (res == 0) {
++				fprintf(stderr, "zero write\n");
++				return -1;
+ 			}
+-		} while(count);
++			p += res;
++			left -= res;
++		}
+ 	}
+ 	return 0;
+ }
+@@ -1489,6 +1487,7 @@
+ 		buf_free(&rreq->data);
+ 		g_free(rreq);
+ 	}
++	pthread_cond_destroy(&chunk->sio.finished);
+ 	g_free(chunk);
+ }
+ 
+@@ -2930,6 +2929,7 @@
+ 			}
+ 			pthread_mutex_unlock(&sshfs.lock);
+ 		}
++		pthread_cond_destroy(&sf->write_finished);
+ 		g_free(sf);
+ 	}
+ 	buf_free(&buf);
+@@ -3015,6 +3015,7 @@
+ 		}
+ 		pthread_mutex_unlock(&sshfs.lock);
+ 	}
++	pthread_cond_destroy(&sf->write_finished);
+ 	g_free(sf);
+ 	return 0;
+ }
+@@ -3387,6 +3388,7 @@
+ 	if (!err)
+ 		err = sio.error;
+ 
++	pthread_cond_destroy(&sio.finished);
+ 	return err;
+ }
+ 
+@@ -4364,7 +4366,24 @@
+ 
+ 	if (sshfs.show_help) {
+ 		usage(args.argv[0]);
++#if defined(__CYGWIN__) && defined(FSP_FUSE_API)
++		/* WinFSP (which implements fuse_lib_help() handler), doesn't
++                   seem to use "\r\n" for line separator as is (was?) typical
++		   on Windows. It uses "\n", which messes up display on Cygwin.
++                   Make WinFSP/Windows think it is writing to a pipe so that
++                   it uses the correct line separator. A nuisance indeed. */
++		/* step 1: route subsequent stderr output into a new pipe */
++		int fds[2];
++		pipe(fds);
++		dup2(fds[1], fileno(stderr)); /* WinFSP writes to stderr */
++#endif
+ 		fuse_lib_help(&args);
++#if defined(__CYGWIN__) && defined(FSP_FUSE_API)
++		/* step 2: echo the pipe contents to stdout, to match usage() */
++		char *pipebuf = alloca(4096);
++		ssize_t len = read(fds[0], pipebuf, 4096);
++		write(fileno(stdout), pipebuf, len);
++#endif
+ 		exit(0);
+ 	} else if (!sshfs.host) {
+ 		fprintf(stderr, "missing host\n");
+@@ -4541,6 +4560,14 @@
+ 		fuse_destroy(fuse);
+ 		exit(1);
+ 	}
++#if defined(__CYGWIN__)
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
++	/* report this FUSE app instance to cygfuse */
++	extern void *cygfuse_report(char *, char *, char *, char *);
++	cygfuse_report(sshfs.host, sshfs.base_path, sshfs.mountpoint, "sshfs");
++#pragma GCC diagnostic pop
++#endif
+ 
+ 	if (sshfs.singlethread)
+ 		res = fuse_loop(fuse);

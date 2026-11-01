@@ -28,7 +28,7 @@ const INSTRUCTIONS =
   'Use Windows paths with host tools and Linux paths with SSH tools. ' +
   'Use SSH read_file/write_file only when the mount is inaccessible, the path is outside the mapped root, or host file tools are unavailable. ' +
   'After any write failure, inspect the actual file before retrying or changing transports, especially for append. ' +
-  'New mounts require SSHFS >=3.7.2 to fix existing-directory mkdir errors; upgrading the runtime requires remounting existing volumes. Report raw host-tool errors, especially backup/UNC errors; do not assume the mount failed or bypass host policy. ' +
+  'New mounts require the project build SSHFS 3.7.6+srb.2; the stock Cygwin 3.7.2 runtime is only a build base. Runtime upgrades require remounting existing volumes. Report raw host-tool errors, especially backup/UNC errors; do not assume the mount failed or bypass host policy. ' +
   'Locate relevant files and lines before reading; prefer small edits over full rewrites. Avoid repeated reads and dumping whole files, datasets, binaries or logs into context. ' +
   'exec starts an isolated task in cwd (default remote_root); cd/export do not persist between MCP calls. ' +
   'exec yields after 1000 ms by default and returns queued/running plus result_id when unfinished. Read incremental output with read_result using next_offset and wait_ms (default 10000); do not busy-poll or rerun the command. Use cancel_exec to stop an active job. ' +

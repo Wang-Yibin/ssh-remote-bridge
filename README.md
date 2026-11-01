@@ -257,11 +257,26 @@ rtk proxy node .\tools\install_sshfs_runtime.mjs
 
 安装器下载已锁定的官方 Cygwin 二进制包，检查大小和 SHA-512，并检查后台启动必需的 `cygwin-console-helper.exe`；不编译程序，不覆盖已有运行库、不触碰当前挂载。优先使用 `runtime/7zip/7z.exe`，否则使用系统 7-Zip。来源、版本和文件 SHA-256 保存于 `runtime/sshfs/provenance.json`。
 
-升级时加 `--stage` 准备 `runtime/sshfs-next/`；验证后保存文件、卸载受影响映射，将旧 `sshfs/` 移至备份，再把 `sshfs-next/` 更名为 `sshfs/` 并重新挂载。运行库不能热更新。新启动的 SSHFS 必须 >=3.7.2；选择顺序为 `SRB_SSHFS` 显式路径 → 项目独立运行库 → 系统 SSHFS-Win。
+**首次克隆 / 换机必做，不能跳过：** `install_sshfs_runtime.mjs` 只安装构建用的基础 Cygwin 包，不会生成或启用项目要求的 SSHFS。按 [SSHFS 构建手册](BUILD-SSHFS.md) 准备独立 Cygwin x64 构建环境，运行 `tools/build_sshfs_handle_fix.mjs`，然后在 PowerShell 确认 `.\runtime\sshfs-next\bin\sshfs.exe --version` 精确显示 `3.7.6+srb.2`。验证后依手册备份旧运行库、启用新运行库并重新挂载。Git 克隆不会自动构建；完成这些步骤前不要挂载。
 
-**首次克隆 / Agent 安装要求：** 基础运行库安装器只准备构建所需依赖，安装完成不代表可直接挂载。首次部署必须继续按 [SSHFS 构建与修复手册](BUILD-SSHFS.md) 构建、验证并启用 3.7.2+srb.1；确认实际选中的 SSHFS 为修复版后再挂载。不要把已知存在句柄泄漏的官方 3.7.2 原版作为最终安装结果。SRB_SSHFS 或系统安装可能覆盖版本选择，必须检查实际使用的程序。若工具链缺失或构建失败，应报告阻塞，不能静默退回原版。Git 克隆和基础安装脚本都不会自动完成修复版构建。
+必须使用 **3.7.6+srb.2**：Windows 资源管理器复制可能在基础版上卡住，且远端文件即使大小正确也可能含有整块零字节数据；单独升级到官方 SSHFS 3.7.6 仍可能复现。修复版保留四处条件变量释放修复，并对 Cygwin SFTP 管道逐段完整写入、在 EINTR 时重试。基础 Cygwin 3.7.2 仅作构建依赖，不能直接挂载；项目会拒绝启动版本不符的新挂载进程。
 
-**句柄泄漏修复版：** 本项目提供 `3.7.2+srb.1` 的源码补丁和构建脚本，需构建后启用到 `runtime/sshfs/` 并重新挂载。修复版二进制不随源码仓库分发；基础安装器仍提供官方原版，不能替代构建步骤。构建环境、验证结果和切换步骤见 [SSHFS 构建与修复手册](BUILD-SSHFS.md)。
+构建脚本生成 `runtime/sshfs-next`，不会覆盖运行库或卸载盘符。运行库不能热更新；切换前保存文件并停止对挂载目录的写入，再按手册重新挂载。补丁、构建和隔离验证步骤见 [SSHFS 构建手册](BUILD-SSHFS.md)。
+
+#### 复制给 Agent 的首次安装 prompt
+
+克隆仓库后，用 Agent 打开仓库根目录，将下面整段发给它；提供所用客户端和服务器连接信息，已有配置可直接复用。此 prompt 会指导 Agent 执行安装，克隆本身不会自动构建。
+
+```text
+请在当前仓库实际完成 ssh-remote-bridge 的首次安装，先阅读 README.md 和 BUILD-SSHFS.md，再按顺序执行：
+1. 检查 Windows x64、本机依赖及已有配置，复用兼容组件；仅询问缺失的客户端和服务器连接信息，不输出密码或私钥。
+2. 按项目锁定清单安装依赖和基础运行库，准备独立 Cygwin 构建环境，运行 tools/build_sshfs_handle_fix.mjs 构建修复版。基础安装器不等于修复版安装完成。
+3. 核对暂存产物的来源、哈希、必需 DLL 和 cygwin-console-helper.exe；确认 SSHFS 版本符合当前手册和代码门禁（当前为 3.7.6+srb.2）。禁止用基础版或未打补丁的官方版代替，避免句柄持续增长、资源管理器复制卡住及文件损坏。
+4. 运行桥接器自身的轻量回归；使用暂存修复版、空闲临时盘符和唯一远端临时目录，核对 SSH 主机指纹后验证 Windows Shell 复制、挂载目录读写及源文件与远端文件的 SHA-256，随后清理测试文件并卸载临时盘。不得只凭文件大小判断复制成功。
+5. 验证通过后备份旧运行库、启用修复版，为我指定的客户端注册 MCP 并完成挂载。若已有活动挂载，先让我保存文件、暂停写入并确认切换；重载 MCP 不能代替卸载重挂。保留旧配置及失败回滚路径。
+6. 按 README 验证客户端可用；文件优先从本地挂载目录读写，重任务用远端 exec。最后报告实际版本、验证结果、注册/重载及挂载状态和未完成项；任何步骤失败都说明原始错误，不跳过验证或静默换用旧版。
+```
+
 
 ### 5.2 注册 MCP
 
@@ -313,12 +328,12 @@ rtk proxy node .\tools\install_sshfs_runtime.mjs
 | Node.js / npm | 26.12.0 Current 正式版 / 11.20.0；`runtime/` |
 | Plink | 0.85；`bin/plink.exe` |
 | 7-Zip | 26.04；`runtime/7zip/` |
-| SSHFS | 3.7.2+srb.1；需构建并启用到 `runtime/sshfs/`，包含四处条件变量销毁修复 |
+| SSHFS | 3.7.6+srb.2；基于官方 3.7.6，包含 Windows SFTP 管道完整写入与四处条件变量释放修复；需构建并启用 |
 | Cygwin / 控制台辅助组件 | 3.6.11；包含 `runtime/sshfs/bin/cygwin-console-helper.exe`，挂载运行库必需 |
 | OpenSSH / OpenSSL | 10.5p1 / 3.5.9；独立 SSHFS 运行库中的官方 Cygwin 二进制 |
 | WinFsp / ssh2 / rclone | 2.1 / 1.17.0 / 1.75.2 |
 
-CLI 和已更新的 MCP 注册优先使用项目独立工具。第三方二进制不进入 Git/npm 包，换机器需重新部署；源码安装使用锁定的 npm 依赖及 Cygwin 包清单。SSHFS 3.7.2 未包含后续上游版本的全部修复。
+CLI 和已更新的 MCP 注册优先使用项目独立工具。第三方二进制不进入 Git/npm 包，换机器需重新部署；源码安装使用锁定的 npm 依赖及 Cygwin 包清单。基础 Cygwin SSHFS 3.7.2 仅用于准备构建依赖，不符合项目挂载版本要求。
 
 ## 7. 故障排查
 
@@ -329,6 +344,7 @@ CLI 和已更新的 MCP 注册优先使用项目独立工具。第三方二进�
 | 已存在的深层目录 mkdir 报 EPERM | 检查活动挂载是否仍使用旧 SSHFS；>=3.7.2 修复了该错误码，升级后需重新挂载 |
 | 对盘符根目录 mkdir 报 EPERM | Windows/Node 的根目录行为，不能据此认定深层目录或文件不可写 |
 | Edit 报 ModifyBackup / UNC 路径错误 | 保留工具名、完整路径、原始错误及失败后内容；这是独立问题，尚未稳定复现 |
+| Windows 资源管理器复制后卡住或文件哈希不符 | 将目标文件视为可能损坏，不要只凭大小判断或继续复用；核对实际 SSHFS 进程是否为 3.7.6+srb.2（官方 3.7.6 仍可能复现），并按构建手册修复、重新挂载后再复制 |
 | 写入失败后准备改走 SSH | 先核对实际文件状态；不要重复追加，不绕过宿主安全策略 |
 | 命令长时间没有输出 | 用 `read_result` 等待新内容；确认程序刷新 stdout，不要重跑原命令 |
 | 输出被截断 | 区分 RESPONSE-LIMIT 与 REMOTE-CAPTURE-LIMIT，按第 2 节读取片段或服务器日志 |
